@@ -2,9 +2,9 @@
 
 ## Context
 
-Build an algorithmic trading application for a startup ("bread") targeting small-capital traders ($5K-$20K). The goal is to generate consistent monthly income (~$1,000/month target, though realistic early returns will be lower). The app will use **Alpaca Markets** (commission-free, excellent REST API, free paper trading) as the primary broker, with **Finnhub** for supplementary market data. The repo will be hosted at `roman10/bread` on GitHub.
+Build an algorithmic trading application for a startup ("bread") targeting small-capital traders ($5K-$20K). The goal is to achieve **~20% annual returns** — ambitious but realistic for systematic swing trading. On $10K capital, that's ~$2,000/year or ~$167/month. The app will use **Alpaca Markets** (commission-free, excellent REST API, free paper trading) as the primary broker, with **Finnhub** for supplementary market data. The repo will be hosted at `roman10/bread` on GitHub.
 
-**Key reality check:** $1,000/month on $5-20K requires 60-240% annual returns. Professional quants average 10-20%. We'll build the infrastructure to scale, start with realistic expectations (2-5% monthly), and grow capital over time.
+**Context:** Professional quants at large funds average 10-20% annually. A focused retail system trading liquid ETFs with disciplined risk management can target the higher end of that range. We'll build the infrastructure to scale, validate with paper trading, and grow capital gradually.
 
 ---
 
@@ -119,7 +119,7 @@ Returns enriched DataFrame with indicator columns appended to OHLCV data.
 
 ### Position Sizing (`risk/position_sizer.py`)
 
-Fixed fractional: `position = (equity × risk_pct) / stop_loss_pct`. Default: 1% risk per trade. On $10K with 5% stop: $2,000 per position.
+Fixed fractional: `position = (equity × risk_pct) / stop_loss_pct`. Default: 0.5% risk per trade. On $10K with 5% stop: $1,000 per position. Conservative sizing aligned with 20% annual target — no need to swing for the fences.
 
 ### Hard Limits & Circuit Breakers (`risk/limits.py`)
 
@@ -128,9 +128,9 @@ Fixed fractional: `position = (equity × risk_pct) / stop_loss_pct`. Default: 1%
 | Max positions | 5 | Reject new entries |
 | Max single position | 20% of equity | Cap position size |
 | Max sector exposure | 40% of equity | Reject if exceeded |
-| Max daily loss | 2% of equity | Halt trading for the day |
-| Max weekly loss | 5% of equity | Halt + alert |
-| Max drawdown from peak | 10% of equity | Halt all trading, require manual restart |
+| Max daily loss | 1.5% of equity | Halt trading for the day |
+| Max weekly loss | 3% of equity | Halt + alert |
+| Max drawdown from peak | 7% of equity | Halt all trading, require manual restart |
 | PDT guard | 3 day trades / 5 days | Block 4th day trade (account < $25K) |
 
 ### Pre-Trade Validation (`risk/validators.py`)
