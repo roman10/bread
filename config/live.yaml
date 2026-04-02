@@ -1,0 +1,4 @@
+# Live trading overrides
+# Inherits all defaults; override only what differs.
+app:
+  log_level: WARNING

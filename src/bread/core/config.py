@@ -1,0 +1,153 @@
+"""Configuration loading, merging, and validation."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from dotenv import load_dotenv
+from pydantic import BaseModel, Field, model_validator
+
+from bread.core.exceptions import ConfigError
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_CONFIG_DIR = _PROJECT_ROOT / "config"
+
+
+# ---------------------------------------------------------------------------
+# Pydantic settings models
+# ---------------------------------------------------------------------------
+
+
+class AppSettings(BaseModel):
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    timezone: str = "America/New_York"
+
+
+class DatabaseSettings(BaseModel):
+    path: str = "data/bread.db"
+
+
+class DataSettings(BaseModel):
+    default_timeframe: str = "1Day"
+    lookback_days: int = Field(default=200, ge=30)
+    request_timeout_seconds: int = 30
+    max_retries: int = 3
+
+
+class AlpacaSettings(BaseModel):
+    paper_api_key: str | None = None
+    paper_secret_key: str | None = None
+    live_api_key: str | None = None
+    live_secret_key: str | None = None
+
+
+class IndicatorSettings(BaseModel):
+    sma_periods: list[int] = Field(default=[20, 50, 200])
+    ema_periods: list[int] = Field(default=[9, 21])
+    rsi_period: int = 14
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    atr_period: int = 14
+    bollinger_period: int = 20
+    bollinger_stddev: float = 2.0
+    volume_sma_period: int = 20
+
+
+class AppConfig(BaseModel):
+    mode: Literal["paper", "live"]
+    app: AppSettings = AppSettings()
+    db: DatabaseSettings = DatabaseSettings()
+    data: DataSettings = DataSettings()
+    alpaca: AlpacaSettings = AlpacaSettings()
+    indicators: IndicatorSettings = IndicatorSettings()
+
+    @model_validator(mode="after")
+    def _check_credentials(self) -> AppConfig:
+        if self.mode == "paper":
+            if not self.alpaca.paper_api_key or not self.alpaca.paper_secret_key:
+                raise ValueError(
+                    "paper mode requires ALPACA_PAPER_API_KEY and ALPACA_PAPER_SECRET_KEY"
+                )
+        else:
+            if not self.alpaca.live_api_key or not self.alpaca.live_secret_key:
+                raise ValueError(
+                    "live mode requires ALPACA_LIVE_API_KEY and ALPACA_LIVE_SECRET_KEY"
+                )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# Config loading helpers
+# ---------------------------------------------------------------------------
+
+
+def deep_merge(base: dict, override: dict) -> dict:  # type: ignore[type-arg]
+    """Recursively merge *override* into *base*. Lists and scalars fully replace."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _load_yaml(path: Path) -> dict:  # type: ignore[type-arg]
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return data if isinstance(data, dict) else {}
+
+
+def load_config(config_dir: Path | None = None) -> AppConfig:
+    """Load, merge, and validate the application config.
+
+    Merge order:
+    1. config/default.yaml
+    2. BREAD_MODE env override
+    3. config/{mode}.yaml overlay
+    4. .env file
+    5. Env-var secrets injected
+    6. Pydantic validation
+    """
+    config_dir = config_dir or _CONFIG_DIR
+
+    # Step 1: load base
+    base = _load_yaml(config_dir / "default.yaml")
+
+    # Step 2: resolve mode
+    mode = os.environ.get("BREAD_MODE", base.get("mode", "paper"))
+    if mode not in ("paper", "live"):
+        raise ConfigError(f"BREAD_MODE must be 'paper' or 'live', got '{mode}'")
+    base["mode"] = mode
+
+    # Step 3: overlay mode-specific config
+    overlay = _load_yaml(config_dir / f"{mode}.yaml")
+    merged = deep_merge(base, overlay)
+
+    # Step 4: load .env (from the project root, one level above config dir)
+    env_path = config_dir.parent / ".env"
+    load_dotenv(env_path)
+
+    # Step 5: inject secrets from environment
+    alpaca = merged.setdefault("alpaca", {})
+    for env_key, config_key in [
+        ("ALPACA_PAPER_API_KEY", "paper_api_key"),
+        ("ALPACA_PAPER_SECRET_KEY", "paper_secret_key"),
+        ("ALPACA_LIVE_API_KEY", "live_api_key"),
+        ("ALPACA_LIVE_SECRET_KEY", "live_secret_key"),
+    ]:
+        val = os.environ.get(env_key)
+        if val:
+            alpaca[config_key] = val
+
+    # Step 6: validate
+    try:
+        return AppConfig.model_validate(merged)
+    except Exception as exc:
+        raise ConfigError(str(exc)) from exc

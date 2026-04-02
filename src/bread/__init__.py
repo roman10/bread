@@ -1,0 +1,1 @@
+"""Bread: Algorithmic trading application."""

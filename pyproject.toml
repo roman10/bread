@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bread"
+version = "0.1.0"
+description = "Algorithmic trading application for swing trading"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "pandas-ta>=0.4.0b0",
+    "alpaca-py>=0.21",
+    "holidays>=0.40",
+    "tenacity>=8.0",
+    "typer>=0.9",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pandas-stubs",
+    "types-PyYAML",
+    "types-requests",
+]
+
+[project.scripts]
+bread = "bread.__main__:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pandas_ta", "alpaca.*", "pandas_ta.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests requiring external API keys",
+]
