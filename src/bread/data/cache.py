@@ -113,8 +113,19 @@ class BarCache:
 
     def _refresh(self, symbol: str, timeframe: str, target_day: date) -> None:
         """Fetch full lookback from provider and upsert into cache."""
-        lookback = self._config.data.lookback_days
-        start = target_day - timedelta(days=int(lookback * 1.5))  # calendar days buffer
+        longest_indicator = max(
+            max(self._config.indicators.sma_periods),
+            max(self._config.indicators.ema_periods),
+            self._config.indicators.rsi_period,
+            self._config.indicators.macd_slow + self._config.indicators.macd_signal,
+            self._config.indicators.atr_period,
+            self._config.indicators.bollinger_period,
+            self._config.indicators.volume_sma_period,
+        )
+        # Need lookback_days usable bars + warmup for longest indicator.
+        # ~1.45 calendar days per trading day, with margin.
+        trading_days_needed = self._config.data.lookback_days + longest_indicator
+        start = target_day - timedelta(days=int(trading_days_needed * 1.5))
         end = target_day
 
         logger.info("Refreshing cache for %s/%s: %s to %s", symbol, timeframe, start, end)
@@ -192,7 +203,10 @@ class BarCache:
             )
 
         df = pd.DataFrame.from_records(records)
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        ts = pd.to_datetime(df["timestamp"])
+        if ts.dt.tz is None:
+            ts = ts.dt.tz_localize("UTC")
+        df["timestamp"] = ts
         df = df.set_index("timestamp")
         df = df.sort_index()
         return df

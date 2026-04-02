@@ -105,7 +105,10 @@ class AlpacaDataProvider(DataProvider):
         if isinstance(df.index, pd.MultiIndex):
             df = df.droplevel("symbol")
 
-        df.index = pd.DatetimeIndex(df.index, tz="UTC")
+        idx = pd.DatetimeIndex(df.index)
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+        df.index = idx
         df.index.name = "timestamp"
 
         required_cols = ["open", "high", "low", "close", "volume"]

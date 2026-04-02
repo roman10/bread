@@ -134,3 +134,24 @@ class TestBarCache:
         cache.get_bars("SPY", as_of_utc=as_of_2)
 
         assert provider.get_bars.call_count == 2
+
+    def test_refresh_requests_enough_history_for_indicators(
+        self, db_session: Session, paper_config: AppConfig
+    ) -> None:
+        """Regression: _refresh must fetch lookback_days + indicator warmup."""
+        provider = MagicMock()
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 400)
+
+        cache = BarCache(db_session, provider, paper_config)
+        et = ZoneInfo("America/New_York")
+        as_of = datetime(2025, 2, 14, 17, 0, tzinfo=et).astimezone(UTC)
+        cache.get_bars("SPY", as_of_utc=as_of)
+
+        call_args = provider.get_bars.call_args
+        start_date = call_args[0][1]  # second positional arg
+        end_date = call_args[0][2]  # third positional arg
+        calendar_days_requested = (end_date - start_date).days
+
+        # With default config (SMA-200, lookback_days=200), we need at least
+        # (200 + 200) trading days ≈ 570+ calendar days, not just 300.
+        assert calendar_days_requested >= 500
