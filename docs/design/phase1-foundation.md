@@ -8,16 +8,17 @@ Set up project scaffolding, configuration, database, data pipeline, and technica
 
 ## Implementation Readiness
 
-**Status:** Ready for implementation after the clarifications in this document.
+**Status:** Ready for implementation.
 
-This phase was previously underspecified in four places that would have caused drift during implementation:
+Scope has been trimmed to only what Phase 1 functionally needs. Deferred to their owning phases:
 
-1. Config shape and secret-loading order were not locked.
-2. Table schemas were only defined for `market_data_cache`.
-3. Cache freshness rules did not account for market-close timing.
-4. Error handling said "return `None`", which conflicts with the project's no-silent-failure rule.
+- **Domain models** (Signal, Order, Position, PortfolioSnapshot) → Phase 2
+- **Event bus** → Phase 2
+- **Skeleton tables** (signals_log, orders, trades, portfolio_snapshots) → Phase 2-4
+- **`get_latest_bar()`** → Phase 2
+- **Finnhub placeholder** → Phase 2
 
-The contracts below resolve those gaps and should be treated as the implementation source of truth for Phase 1.
+The contracts below are the implementation source of truth for Phase 1.
 
 ---
 
@@ -137,72 +138,15 @@ class AppConfig(BaseModel):
 #### Secret rules
 
 - API keys are never stored in YAML.
-- In `paper` mode, only paper credentials are required.
-- In `live` mode, only live credentials are required.
+- In `paper` mode, only paper credentials are required; live credentials are optional.
+- In `live` mode, only live credentials are required; paper credentials are optional.
 - `BREAD_MODE` must match `paper` or `live`; any other value is a startup error.
 - Missing required credentials raise config validation errors at startup.
+- Implementation: use a Pydantic `model_validator(mode="after")` on `AppConfig` that checks the mode-appropriate credentials are present. Credential fields on `AlpacaSettings` should default to `None` so that unused-mode keys are not required by the model itself.
 
-### 1.3 Domain Models (`core/models.py`)
+### 1.3 Exceptions (`core/exceptions.py`)
 
-Use frozen dataclasses for Phase 1 domain models. All timestamps in Python must be timezone-aware UTC datetimes.
-
-Required models:
-
-- `Signal`
-  - `symbol: str`
-  - `strategy_name: str`
-  - `direction: Literal["buy", "sell"]`
-  - `strength: float` in `[0.0, 1.0]`
-  - `generated_at: datetime`
-  - `stop_loss: float | None`
-  - `reason: str | None`
-  - `metadata: dict[str, Any]`
-- `Order`
-  - `symbol: str`
-  - `side: Literal["buy", "sell"]`
-  - `quantity: float`
-  - `order_type: Literal["market", "limit", "stop", "stop_limit"]`
-  - `status: str`
-  - `submitted_at: datetime`
-  - `filled_at: datetime | None`
-  - `filled_avg_price: float | None`
-- `Position`
-  - `symbol: str`
-  - `quantity: float`
-  - `avg_entry_price: float`
-  - `market_value: float`
-  - `opened_at: datetime`
-- `PortfolioSnapshot`
-  - `captured_at: datetime`
-  - `equity: float`
-  - `cash: float`
-  - `buying_power: float`
-  - `positions_value: float`
-
-Serialization requirement:
-
-- Provide a single helper that converts these dataclasses into plain dictionaries for persistence and logging.
-- Do not add per-model ad hoc serialization code.
-
-### 1.4 Event Bus (`core/events.py`)
-
-Implement a lightweight in-process event bus with this contract:
-
-```python
-class EventBus:
-    def subscribe(self, event_name: str, callback: Callable[[Any], None]) -> Callable[[], None]: ...
-    def publish(self, event_name: str, payload: Any) -> None: ...
-```
-
-Behavior rules:
-
-- Subscribers are called synchronously in subscription order.
-- `subscribe()` returns an unsubscribe function.
-- Publishing to an event with no subscribers is a no-op.
-- Callback exceptions are not swallowed; they propagate to the caller.
-- No Phase 1 module is required to publish events yet. This is infrastructure only.
-
-### 1.5 Exceptions (`core/exceptions.py`)
+> **Note:** Domain models (`core/models.py`) and event bus (`core/events.py`) from the parent design are deferred to Phase 2, where the consuming code (strategies, execution) will define their actual shape.
 
 Define an explicit exception hierarchy:
 
@@ -219,7 +163,7 @@ Define an explicit exception hierarchy:
 
 Use these instead of raw `ValueError` / `RuntimeError` in application code.
 
-### 1.6 Database (`db/`)
+### 1.4 Database (`db/`)
 
 Use SQLAlchemy ORM with SQLite. Database initialization is done with `Base.metadata.create_all()`; Alembic is deferred until schema stabilizes.
 
@@ -255,80 +199,14 @@ Constraints:
 - Unique constraint on `(symbol, timeframe, timestamp_utc)`
 - Index on `(symbol, timeframe, timestamp_utc)`
 
-##### `signals_log`
-
-This table exists in Phase 1 as a forward-compatible skeleton for Phase 2.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | Auto-increment |
-| `created_at_utc` | DATETIME | Required |
-| `strategy_name` | TEXT | Required |
-| `symbol` | TEXT | Required |
-| `direction` | TEXT | Required |
-| `strength` | FLOAT | Nullable |
-| `stop_loss` | FLOAT | Nullable |
-| `reason` | TEXT | Nullable |
-| `payload_json` | TEXT | JSON string |
-
-##### `orders`
-
-This table exists in Phase 1 as a forward-compatible skeleton for Phase 3.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | Auto-increment |
-| `created_at_utc` | DATETIME | Required |
-| `symbol` | TEXT | Required |
-| `side` | TEXT | Required |
-| `quantity` | FLOAT | Required |
-| `order_type` | TEXT | Required |
-| `status` | TEXT | Required |
-| `limit_price` | FLOAT | Nullable |
-| `stop_price` | FLOAT | Nullable |
-| `filled_avg_price` | FLOAT | Nullable |
-| `broker_order_id` | TEXT | Nullable, unique when present |
-| `payload_json` | TEXT | JSON string |
-
-##### `trades`
-
-This table exists in Phase 1 as a forward-compatible skeleton for Phase 3/4.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | Auto-increment |
-| `opened_at_utc` | DATETIME | Required |
-| `closed_at_utc` | DATETIME | Nullable |
-| `symbol` | TEXT | Required |
-| `side` | TEXT | Required |
-| `quantity` | FLOAT | Required |
-| `entry_price` | FLOAT | Required |
-| `exit_price` | FLOAT | Nullable |
-| `pnl_amount` | FLOAT | Nullable |
-| `pnl_pct` | FLOAT | Nullable |
-| `strategy_name` | TEXT | Nullable |
-| `order_id` | INTEGER | Nullable FK to `orders.id` |
-
-##### `portfolio_snapshots`
-
-This table exists in Phase 1 as a forward-compatible skeleton for Phase 4.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | Auto-increment |
-| `captured_at_utc` | DATETIME | Required |
-| `equity` | FLOAT | Required |
-| `cash` | FLOAT | Required |
-| `buying_power` | FLOAT | Required |
-| `positions_value` | FLOAT | Required |
-| `day_pnl` | FLOAT | Nullable |
+Additional tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) are deferred to their owning phases (Phase 2-4). Their schemas will be designed when the consuming code is built, avoiding stale DDL.
 
 Required modules:
 
 - `db/database.py` — engine, session factory, path resolution
 - `db/models.py` — ORM models
 
-### 1.7 Data Pipeline (`data/`)
+### 1.5 Data Pipeline (`data/`)
 
 All Phase 1 data fetching is synchronous. That is sufficient for daily bars and avoids unnecessary complexity.
 
@@ -343,9 +221,9 @@ class DataProvider(ABC):
         end: date,
         timeframe: str,
     ) -> pd.DataFrame: ...
-
-    def get_latest_bar(self, symbol: str, timeframe: str = "1Day") -> pd.Series: ...
 ```
+
+`get_latest_bar()` is deferred to Phase 2 when strategies need intra-day prices.
 
 DataFrame contract for `get_bars()`:
 
@@ -361,11 +239,6 @@ DataFrame contract for `get_bars()`:
 - Default lookback is `data.lookback_days` from config.
 - Normalize Alpaca responses into the provider contract exactly.
 - Convert symbol input to uppercase before requests and cache keys.
-
-#### Finnhub (`data/finnhub_data.py`)
-
-- Deferred to Phase 2.
-- File may exist as a placeholder, but no functional implementation is required in Phase 1.
 
 #### Cache behavior (`data/cache.py`)
 
@@ -425,7 +298,7 @@ Use `tenacity`.
 - Authentication failures raise `DataProviderAuthError`.
 - Exhausted retries raise `DataProviderError`.
 
-### 1.8 Technical Indicators (`data/indicators.py`)
+### 1.6 Technical Indicators (`data/indicators.py`)
 
 Compute indicators with `pandas-ta` using config values from `AppConfig.indicators`.
 
@@ -436,7 +309,7 @@ Column naming convention — names are derived dynamically from config values:
 - `rsi_{rsi_period}` → e.g. `rsi_14`
 - `macd`, `macd_signal`, `macd_hist` (fixed names, parameters from `macd_fast`/`macd_slow`/`macd_signal`)
 - `atr_{atr_period}` → e.g. `atr_14`
-- `bb_lower_{bollinger_period}_{bollinger_stddev}`, `bb_mid_...`, `bb_upper_...` → e.g. `bb_lower_20_2.0`, `bb_mid_20_2.0`, `bb_upper_20_2.0`
+- `bb_lower_{bollinger_period}_{stddev}`, `bb_mid_...`, `bb_upper_...` — format `stddev` as integer when whole (e.g. `2.0` → `2`), otherwise keep decimal (e.g. `1.5`) → e.g. `bb_lower_20_2`, `bb_mid_20_2`, `bb_upper_20_2`
 - `volume_sma_{volume_sma_period}` → e.g. `volume_sma_20`
 
 With default config, the expected output columns are:
@@ -446,7 +319,7 @@ With default config, the expected output columns are:
 - `rsi_14`
 - `macd`, `macd_signal`, `macd_hist`
 - `atr_14`
-- `bb_lower_20_2.0`, `bb_mid_20_2.0`, `bb_upper_20_2.0`
+- `bb_lower_20_2`, `bb_mid_20_2`, `bb_upper_20_2`
 - `volume_sma_20`
 
 Behavior rules:
@@ -457,7 +330,7 @@ Behavior rules:
 - Log the number of trimmed rows at `DEBUG`.
 - The returned DataFrame must contain no nulls in any required indicator column.
 
-### 1.9 CLI Output Contract
+### 1.7 CLI Output Contract
 
 #### `bread db init`
 
@@ -488,6 +361,8 @@ Example:
 SYMBOL=SPY bars=201 start=2025-01-02 end=2025-10-20 indicators=14
 ```
 
+`indicators` is the count of indicator columns added (excluding the original OHLCV columns). With default config this is 14.
+
 This output is intentionally compact so tests can assert it easily.
 
 ---
@@ -503,23 +378,15 @@ All checks must pass before Phase 2 starts.
    - Invalid YAML raises a Pydantic validation error.
    - `paper` mode does not require live credentials.
    - `live` mode does not require paper credentials.
-2. **Domain models**
-   - `Signal`, `Order`, `Position`, and `PortfolioSnapshot` instantiate with valid data.
-   - Invalid `Signal.strength` values are rejected.
-3. **Event bus**
-   - Publish invokes all subscribers in registration order.
-   - Unsubscribe removes the callback.
-   - Publish with no subscribers does not error.
-   - Subscriber exceptions propagate.
-4. **Database**
-   - `bread db init` creates all five tables.
-   - CRUD operations succeed for every ORM model.
-   - `market_data_cache` unique constraint prevents duplicate bar rows.
-5. **Cache**
+2. **Database**
+   - `bread db init` creates the `market_data_cache` table.
+   - CRUD operations succeed for `market_data_cache`.
+   - Unique constraint on `(symbol, timeframe, timestamp_utc)` prevents duplicate bar rows.
+3. **Cache**
    - First fetch populates cache.
    - Second fetch on the same day is a cache hit.
    - Stale cache triggers refresh based on last completed trading day logic.
-6. **Indicators**
+4. **Indicators**
    - Given a known OHLCV DataFrame, indicator columns are present and numerically correct for spot-checked SMA, RSI, and ATR values.
    - Returned DataFrame contains no null indicator values.
    - Insufficient input history raises `InsufficientHistoryError`.
