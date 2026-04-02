@@ -82,7 +82,7 @@ Merge order:
 5. Inject secrets from environment variables into the final config object.
 6. Validate with `AppConfig.model_validate(...)`.
 
-Nested dicts merge recursively; scalar values fully override the base value.
+Nested dicts merge recursively; all other values (scalars, lists, `None`) fully replace the base value. A list in an overlay file replaces the entire list from the base, not appended.
 
 ```python
 def deep_merge(base: dict, override: dict) -> dict:
@@ -409,6 +409,7 @@ Refresh behavior:
 
 - On cache miss: fetch full configured lookback and upsert into `market_data_cache`.
 - On stale cache: fetch the full configured lookback again and upsert; do not try to patch only the missing tail in Phase 1.
+- Upsert mechanism: use SQLite `INSERT ... ON CONFLICT(symbol, timeframe, timestamp_utc) DO UPDATE SET` to update OHLCV and `fetched_at_utc` columns. Use SQLAlchemy's `sqlite.insert(...).on_conflict_do_update(...)`.
 - After fetch, load the requested range from SQLite and return it sorted ascending.
 
 #### Retry and failure handling
@@ -428,21 +429,24 @@ Use `tenacity`.
 
 Compute indicators with `pandas-ta` using config values from `AppConfig.indicators`.
 
-Required output columns:
+Column naming convention — names are derived dynamically from config values:
 
-- `sma_20`
-- `sma_50`
-- `sma_200`
-- `ema_9`
-- `ema_21`
+- `sma_{period}` for each period in `sma_periods` → e.g. `sma_20`, `sma_50`, `sma_200`
+- `ema_{period}` for each period in `ema_periods` → e.g. `ema_9`, `ema_21`
+- `rsi_{rsi_period}` → e.g. `rsi_14`
+- `macd`, `macd_signal`, `macd_hist` (fixed names, parameters from `macd_fast`/`macd_slow`/`macd_signal`)
+- `atr_{atr_period}` → e.g. `atr_14`
+- `bb_lower_{bollinger_period}_{bollinger_stddev}`, `bb_mid_...`, `bb_upper_...` → e.g. `bb_lower_20_2.0`, `bb_mid_20_2.0`, `bb_upper_20_2.0`
+- `volume_sma_{volume_sma_period}` → e.g. `volume_sma_20`
+
+With default config, the expected output columns are:
+
+- `sma_20`, `sma_50`, `sma_200`
+- `ema_9`, `ema_21`
 - `rsi_14`
-- `macd`
-- `macd_signal`
-- `macd_hist`
+- `macd`, `macd_signal`, `macd_hist`
 - `atr_14`
-- `bb_lower_20_2`
-- `bb_mid_20_2`
-- `bb_upper_20_2`
+- `bb_lower_20_2.0`, `bb_mid_20_2.0`, `bb_upper_20_2.0`
 - `volume_sma_20`
 
 Behavior rules:
@@ -467,7 +471,7 @@ Behavior:
 
 1. Load config.
 2. Initialize logging.
-3. Create DB/session if needed.
+3. Auto-initialize DB tables if the database does not yet exist (same logic as `bread db init`). This makes `bread db init` a convenience command, not a prerequisite.
 4. Fetch and cache raw bars.
 5. Compute indicators.
 6. Print one summary line.
