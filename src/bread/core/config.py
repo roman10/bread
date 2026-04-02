@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from bread.core.exceptions import ConfigError
 
@@ -25,6 +26,15 @@ class AppSettings(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     timezone: str = "America/New_York"
 
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except KeyError as exc:
+            raise ValueError(f"Invalid timezone: {v}") from exc
+        return v
+
 
 class DatabaseSettings(BaseModel):
     path: str = "data/bread.db"
@@ -33,8 +43,8 @@ class DatabaseSettings(BaseModel):
 class DataSettings(BaseModel):
     default_timeframe: str = "1Day"
     lookback_days: int = Field(default=200, ge=30)
-    request_timeout_seconds: int = 30
-    max_retries: int = 3
+    request_timeout_seconds: int = Field(default=30, ge=1)
+    max_retries: int = Field(default=3, ge=1)
 
 
 class AlpacaSettings(BaseModel):

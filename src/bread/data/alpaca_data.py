@@ -10,12 +10,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from requests.exceptions import ConnectionError, Timeout
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from bread.core.config import AppConfig
 from bread.core.exceptions import (
@@ -48,6 +43,14 @@ class AlpacaDataProvider(DataProvider):
             )
         self._client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
         self._config = config
+        self._retrier = Retrying(
+            retry=retry_if_exception_type(
+                (ConnectionError, Timeout, DataProviderRateLimitError)
+            ),
+            stop=stop_after_attempt(config.data.max_retries),
+            wait=wait_exponential(multiplier=1, min=1, max=4),
+            reraise=True,
+        )
 
     def get_bars(
         self,
@@ -62,27 +65,16 @@ class AlpacaDataProvider(DataProvider):
             raise DataProviderError(f"Unsupported timeframe: {timeframe}")
 
         logger.info("Fetching %s bars for %s from %s to %s", timeframe, symbol, start, end)
-        df = self._fetch_with_retry(symbol, start, end, tf)
+        df = self._retrier(self._do_fetch, symbol, start, end, tf)
         return self._normalize(df, symbol)
 
-    @retry(
-        retry=retry_if_exception_type(
-            (ConnectionError, Timeout, DataProviderRateLimitError)
-        ),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=4),
-        reraise=True,
-    )
-    def _fetch_with_retry(
+    def _do_fetch(
         self,
         symbol: str,
         start: date,
         end: date,
         timeframe: TimeFrame,
     ) -> pd.DataFrame:
-        # Classify and raise typed exceptions BEFORE tenacity sees them.
-        # Auth errors and response errors are NOT retried.
-        # ConnectionError, Timeout, and RateLimitError ARE retried by tenacity.
         try:
             request = StockBarsRequest(
                 symbol_or_symbols=symbol,
@@ -110,7 +102,6 @@ class AlpacaDataProvider(DataProvider):
     @staticmethod
     def _normalize(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
         """Normalize Alpaca response into the provider contract."""
-        # Alpaca returns multi-index (symbol, timestamp); drop symbol level
         if isinstance(df.index, pd.MultiIndex):
             df = df.droplevel("symbol")
 

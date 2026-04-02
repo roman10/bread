@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import holidays
@@ -70,7 +70,7 @@ class BarCache:
         """Return cached bars, fetching/refreshing as needed."""
         symbol = symbol.upper()
         timeframe = timeframe or self._config.data.default_timeframe
-        as_of_utc = as_of_utc or datetime.now(timezone.utc)
+        as_of_utc = as_of_utc or datetime.now(UTC)
 
         target_day = last_completed_trading_day(as_of_utc)
 
@@ -95,13 +95,11 @@ class BarCache:
             logger.debug("Cache miss for %s/%s", symbol, timeframe)
             return True
 
-        latest: date
+        # SQLAlchemy returns datetime for DateTime columns; SQLite raw may return str
         if isinstance(row, datetime):
             latest = row.date()
-        elif isinstance(row, str):
-            latest = datetime.fromisoformat(row).date()
         else:
-            latest = row
+            latest = datetime.fromisoformat(str(row)).date()
 
         is_stale = latest < target_day
         if is_stale:
@@ -129,7 +127,7 @@ class BarCache:
 
     def _upsert(self, df: pd.DataFrame, symbol: str, timeframe: str) -> None:
         """Upsert bars into market_data_cache using ON CONFLICT DO UPDATE."""
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         rows = []
         for ts, row in df.iterrows():
             rows.append(
