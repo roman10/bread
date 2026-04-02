@@ -18,7 +18,7 @@ Scope has been trimmed to only what Phase 2 functionally needs. Deferred to thei
 - **Execution-related DB tables** (`orders`, `trades`) → Phase 3
 - **Portfolio snapshots table** → Phase 4
 
-The contracts below are the implementation source of truth for Phase 2.
+The contracts below are the implementation source of truth for Phase 2. They include the naming, path-resolution, indicator-dependency, and execution-order rules needed to implement Phase 2 without guessing.
 
 ---
 
@@ -92,12 +92,12 @@ entry:
   rsi_oversold: 30       # RSI bounce threshold
   sma_fast: 20           # SMA(sma_fast) > SMA(sma_mid)
   sma_mid: 50
-  volume_mult: 1.0       # volume > volume_mult * volume_sma
+  volume_sma_period: 20
+  volume_mult: 1.0       # must be >= 1.0; volume > volume_mult * volume_sma
 
 exit:
   rsi_overbought: 70
   atr_stop_mult: 1.5     # stop loss = atr_stop_mult * ATR
-  atr_trail_trigger: 2.0 # activate trailing stop after 2x ATR gain
   time_stop_days: 15     # close after N trading days
 ```
 
@@ -105,8 +105,8 @@ exit:
 
 ```python
 class StrategySettings(BaseModel):
-    name: str
-    config_path: str  # relative to config/strategies/
+    name: str  # canonical snake_case identifier used by config, CLI, registry, and Signal.strategy_name
+    config_path: str  # relative to config/
 
 class BacktestSettings(BaseModel):
     initial_capital: float = Field(default=10000.0, gt=0)
@@ -115,8 +115,8 @@ class BacktestSettings(BaseModel):
 
 class AppConfig(BaseModel):
     # ... existing fields ...
-    strategies: list[StrategySettings] = []
-    backtest: BacktestSettings = BacktestSettings()
+    strategies: list[StrategySettings] = Field(default_factory=list)
+    backtest: BacktestSettings = Field(default_factory=BacktestSettings)
 ```
 
 #### `config/default.yaml` additions
@@ -134,7 +134,14 @@ backtest:
 
 #### Strategy config loading
 
-Strategy YAML files are loaded on demand by the strategy implementation, not by `load_config()`. The `config_path` is resolved relative to the `config/` directory. Strategy classes receive the raw `dict` from `yaml.safe_load()` and validate it internally.
+Strategy YAML files are loaded on demand by the strategy implementation, not by `load_config()`. `load_config()` validates only the `StrategySettings` metadata.
+
+Rules:
+- `StrategySettings.name` is the canonical strategy identifier. The same exact lowercase snake_case value is used in config, the CLI `--strategy` flag, the registry key, and `Signal.strategy_name`.
+- Strategy names must be unique within `AppConfig.strategies`.
+- `StrategySettings.config_path` is resolved relative to the project `config/` directory.
+- The CLI resolves `config_path` to an absolute `Path` before instantiating the strategy.
+- Phase 2 creates `config/strategies/etf_momentum.yaml` as part of the implementation.
 
 ### 2.4 Strategy Framework
 
@@ -178,6 +185,12 @@ class Strategy(ABC):
     def min_history_days(self) -> int:
         """Minimum number of trading days of history required for evaluation."""
         ...
+
+    @property
+    @abstractmethod
+    def time_stop_days(self) -> int:
+        """Number of trading bars to hold before a time-stop exit."""
+        ...
 ```
 
 Rules:
@@ -192,13 +205,16 @@ Rules:
 _REGISTRY: dict[str, type[Strategy]] = {}
 
 
-def register(cls: type[Strategy]) -> type[Strategy]:
-    """Class decorator to register a strategy."""
-    name = cls.__name__
-    if name in _REGISTRY:
-        raise ValueError(f"Strategy already registered: {name}")
-    _REGISTRY[name] = cls
-    return cls
+def register(name: str):
+    """Class decorator factory to register a strategy under its canonical identifier."""
+
+    def decorator(cls: type[Strategy]) -> type[Strategy]:
+        if name in _REGISTRY:
+            raise ValueError(f"Strategy already registered: {name}")
+        _REGISTRY[name] = cls
+        return cls
+
+    return decorator
 
 
 def get_strategy(name: str) -> type[Strategy]:
@@ -214,57 +230,71 @@ def list_strategies() -> list[str]:
 ```
 
 Rules:
-- Registration happens at import time via the `@register` decorator.
-- The registry key is the **class name**, not a configurable string. This avoids mismatches.
+- Registration happens at import time via `@register("<strategy_name>")`.
+- The registry key is the canonical strategy identifier from config and CLI (for example `etf_momentum`), not the Python class name.
 - `strategy/__init__.py` must import all strategy modules to trigger registration:
   ```python
-  from bread.strategy import etf_momentum  # noqa: F401
+  from . import etf_momentum  # noqa: F401
   ```
-- Adding a new strategy: (1) create file, (2) decorate with `@register`, (3) import in `__init__.py`, (4) add YAML config. No changes to framework code.
+- Adding a new strategy: (1) create file, (2) decorate with `@register("<strategy_name>")`, (3) import in `__init__.py`, (4) add YAML config. No changes to framework code.
 
 ### 2.5 ETF Momentum Strategy (`strategy/etf_momentum.py`)
 
 #### Constructor
 
 ```python
-@register
+@register("etf_momentum")
 class EtfMomentum(Strategy):
-    def __init__(self, config_path: Path) -> None:
+    def __init__(self, config_path: Path, indicator_settings: IndicatorSettings) -> None:
         """Load strategy-specific config from YAML."""
         ...
 ```
 
-The constructor loads `config/strategies/etf_momentum.yaml` and stores the parsed parameters. If the file is missing or invalid, raise `StrategyError`.
+The constructor loads the YAML from the provided absolute `config_path` and stores the parsed parameters. If the file is missing or invalid, raise `StrategyError`.
+
+The constructor also validates that the precomputed global indicator settings can satisfy the strategy:
+- `entry.sma_long`, `entry.sma_fast`, and `entry.sma_mid` must all be present in `AppConfig.indicators.sma_periods`
+- `entry.rsi_period` must equal `AppConfig.indicators.rsi_period`
+- `entry.volume_sma_period` must equal `AppConfig.indicators.volume_sma_period`
+- `entry.volume_mult` must be `>= 1.0`
+
+Phase 2 uses only indicators produced by the global `compute_indicators()` pipeline. Strategy-specific custom indicator pipelines are out of scope.
 
 #### Properties
 
 - `name` → `"etf_momentum"`
 - `universe` → the symbol list from the YAML config
-- `min_history_days` → `200` (driven by `entry.sma_long`)
+- `min_history_days` → `max(entry.sma_long, entry.rsi_period, entry.volume_sma_period, indicator_settings.atr_period)` (200 with the default config)
+- `time_stop_days` → `exit.time_stop_days`
 
 #### `evaluate()` logic
 
-For each symbol in the universe, check both entry and exit conditions against the **last row** of the provided DataFrame (the "current" bar).
+For each symbol present in the provided `universe` mapping, check conditions against the **last row** of that symbol's DataFrame (the "current" bar). A configured symbol may be absent from `universe` if the data feed excluded it for insufficient history; missing symbols are skipped, not treated as errors.
+
+For a given symbol and evaluation call, emit **at most one** signal:
+- If any SELL condition is true, emit a SELL signal and do not also emit a BUY.
+- Otherwise, emit a BUY signal only if all BUY conditions are true.
+- The strategy may emit SELL signals even when no position is currently open; the backtest engine is responsible for ignoring SELL signals for symbols with no open position.
 
 **Entry conditions (all must be true to emit a BUY signal):**
 
 1. `close > sma_{entry.sma_long}` — price above long-term SMA
 2. `rsi_{entry.rsi_period}` crossed above `entry.rsi_oversold` — the current bar's RSI is above the threshold AND at least one of the previous 3 bars had RSI below the threshold (bounce detection)
 3. `sma_{entry.sma_fast} > sma_{entry.sma_mid}` — intermediate uptrend
-4. `volume > entry.volume_mult * volume_sma_20` — volume confirmation
+4. `volume > entry.volume_mult * volume_sma_{entry.volume_sma_period}` — volume confirmation
 
 **Exit conditions (any one triggers a SELL signal):**
 
-1. `rsi_{entry.rsi_period} > exit.rsi_overbought` — overbought
+1. `rsi_{entry.rsi_period} > exit.rsi_overbought` — overbought on the same RSI period used for entry
 2. Trend reversal: `sma_{entry.sma_fast} < sma_{entry.sma_mid}` (SMA cross-under)
 
-Note: ATR-based stop loss, trailing stop, and time stop are execution-level concerns. In Phase 2, `evaluate()` includes `stop_loss_pct` in the Signal (computed as `exit.atr_stop_mult * atr_{indicators.atr_period} / close`), but the actual stop order submission is deferred to Phase 3.
+Note: ATR-based stop loss and time stop are execution-level concerns. In Phase 2, `evaluate()` includes `stop_loss_pct` in the Signal (computed on the current bar as `exit.atr_stop_mult * atr_{indicator_settings.atr_period} / close`), but the actual stop order submission is deferred to Phase 3.
 
 **Signal strength:**
 
 For BUY signals, strength is computed as:
 ```python
-strength = min(1.0, (volume / volume_sma) - 1.0)  # clamp to [0.0, 1.0]
+strength = max(0.0, min(1.0, (volume / volume_sma_current) - 1.0))  # clamp to [0.0, 1.0]
 ```
 Higher volume relative to average = stronger signal. If volume exactly equals the SMA, strength is 0.0.
 
@@ -273,16 +303,23 @@ For SELL signals, strength is always `1.0`.
 **Reason string format:**
 
 ```
-"BUY: close={close:.2f} > sma200={sma:.2f}, rsi={rsi:.1f} bounce, sma20={sma20:.2f} > sma50={sma50:.2f}, vol_ratio={ratio:.1f}x"
+f"BUY: close={close:.2f} > sma{entry.sma_long}={sma_long:.2f}, "
+f"rsi={rsi:.1f} bounce, "
+f"sma{entry.sma_fast}={sma_fast:.2f} > sma{entry.sma_mid}={sma_mid:.2f}, "
+f"vol_ratio={ratio:.1f}x"
 ```
 
 ```
-"SELL: rsi={rsi:.1f} > 70 overbought"
+f"SELL: rsi={rsi:.1f} > {exit.rsi_overbought} overbought"
 ```
 
 ```
-"SELL: sma20={sma20:.2f} < sma50={sma50:.2f} trend reversal"
+f"SELL: sma{entry.sma_fast}={sma_fast:.2f} < sma{entry.sma_mid}={sma_mid:.2f} trend reversal"
 ```
+
+Rules:
+- `evaluate()` raises `StrategyError` if the current DataFrame for a symbol is empty, missing required indicator columns, or yields an invalid signal payload.
+- `stop_loss_pct` must be strictly positive.
 
 ### 2.6 Backtest Engine
 
@@ -316,10 +353,11 @@ class HistoricalDataFeed:
 
 Rules:
 - Uses `BarCache.get_bars()` to fetch/cache raw bars for each symbol.
-- Calls `compute_indicators()` on each symbol's DataFrame.
+- Calls `compute_indicators()` on each symbol's DataFrame using the global `AppConfig.indicators` settings.
 - Filters the enriched DataFrame to `[start, end]` inclusive.
 - If a symbol has insufficient history for indicators, log a warning and exclude it from the result (do not raise).
 - Returns only symbols that have data within the requested date range.
+- Returned symbols may be a strict subset of `strategy.universe`.
 
 #### Backtest engine (`backtest/engine.py`)
 
@@ -341,7 +379,7 @@ class Trade:
 class BacktestResult:
     trades: list[Trade]
     equity_curve: pd.Series           # DatetimeIndex → portfolio value
-    metrics: dict[str, float]         # output of compute_metrics()
+    metrics: dict[str, float | int]   # output of compute_metrics()
     initial_capital: float
     final_equity: float
 
@@ -365,28 +403,47 @@ class BacktestEngine:
 
 **Execution model:**
 
-The backtest iterates over each trading day in `[start, end]`:
+The backtest iterates over the sorted union of bar dates present in `universe_data` within `[start, end]`. It does **not** synthesize extra dates for weekends or holidays.
+
+For a simulation date `T`, a symbol is considered tradable only if it has a bar dated `T`. If an open position's symbol has no bar on `T`, carry forward the most recent close for equity-marking only and do not evaluate stop-loss or strategy exits for that symbol on `T`.
+
+The backtest loop is:
 
 1. **Slice data** — For each symbol, slice the DataFrame to include only rows up to and including the current date. This prevents look-ahead bias.
-2. **Check exits** — For each open position, check:
+2. **Check exits** — For each open position that has a bar on the current date, check:
    - Stop loss hit: if the current bar's `low <= stop_loss_price`, exit at `stop_loss_price`.
-   - Time stop: if `trading_days_held >= exit.time_stop_days`, exit at current `close`.
-   - Strategy SELL signal: exit at current `close`.
+   - Time stop: if `trading_days_held >= strategy.time_stop_days`, exit at current `close`.
+   - Strategy SELL signal: evaluated later in the loop and applied only to symbols with an open position.
 3. **Evaluate strategy** — Call `strategy.evaluate(sliced_universe)` to get signals.
-4. **Process entries** — For each BUY signal where no position is already open for that symbol:
-   - Compute position size: `shares = floor(capital_per_position / entry_price)`
-   - `capital_per_position = equity * (1 / max_positions)` where `max_positions = 5`
+4. **Validate signals** — For every signal returned, verify:
+   - `signal.strategy_name == strategy.name`
+   - `0.0 <= signal.strength <= 1.0`
+   - `signal.stop_loss_pct > 0`
+   - `signal.symbol` exists in `sliced_universe`
+   Invalid signals are a strategy bug; raise `StrategyError`.
+5. **Apply SELL signals** — For each SELL signal whose symbol currently has an open position, exit at the current `close`.
+6. **Process entries** — For BUY signals:
+   - Ignore any symbol that already has an open position.
+   - Ignore any symbol that already exited earlier on the same simulation date; no same-day exit-and-re-entry in Phase 2.
+   - Sort eligible BUY signals by descending `strength`, then by `symbol` ascending as a deterministic tie-breaker.
+   - Compute `equity_before_entries` after all exits for the day.
+   - `capital_per_position = equity_before_entries * (1 / max_positions)` where `max_positions = 5`
    - Apply slippage: `entry_price = close * (1 + slippage_pct)`
-   - Compute stop loss price: `entry_price * (1 - stop_loss_pct)`
+   - Compute position size: `shares = floor(capital_per_position / entry_price)`
+   - Compute stop loss price once at entry: `entry_price * (1 - stop_loss_pct)`
    - Deduct cost from cash: `shares * entry_price + commission_per_trade`
-5. **Record equity** — `cash + sum(position_value for open positions)`, using current close prices.
+7. **Record equity** — `cash + sum(position_value for open positions)`, using the current close when available or the most recent prior close otherwise.
 
 **Position tracking rules:**
 - Maximum 5 concurrent positions (hardcoded in Phase 2; extracted to risk config in Phase 3).
 - One position per symbol at a time.
 - No short selling in Phase 2.
 - If insufficient cash to open a new position, skip the signal (log at DEBUG).
-- Trades that are still open at end of backtest are force-closed at the last bar's close price with `exit_reason = "backtest_end"`.
+- Stop loss price is static for the life of the trade in Phase 2. Trailing stops are deferred to Phase 3.
+- Gap-through stop-loss behavior is simplified in Phase 2: if a bar trades through the stop, the fill price is still `stop_loss_price`.
+- `trading_days_held` counts completed trading bars after the entry bar. Example: `time_stop_days = 15` exits on the 15th bar after `entry_date`; the entry day does not count.
+- If `universe_data` is empty after loading, `run()` raises `BacktestError`.
+- Trades that are still open at end of backtest are force-closed at the last available bar's close price on or before `end` with `exit_reason = "backtest_end"`.
 
 #### Metrics (`backtest/metrics.py`)
 
@@ -395,7 +452,7 @@ def compute_metrics(
     trades: list[Trade],
     equity_curve: pd.Series,
     initial_capital: float,
-) -> dict[str, float]:
+) -> dict[str, float | int]:
     """Compute backtest performance metrics.
 
     Returns dict with keys:
@@ -423,7 +480,8 @@ def compute_metrics(
 Rules:
 - Daily returns are computed from the equity curve: `equity_curve.pct_change().dropna()`.
 - All percentage metrics are expressed as percentages (e.g. 15.0 for 15%), not decimals.
-- If the equity curve has fewer than 2 data points, return all metrics as 0.0 except `total_trades`.
+- `profit_factor` is allowed to be `float("inf")` only when there are no losing trades.
+- If the equity curve has fewer than 2 data points, return all float metrics as 0.0 and `total_trades` as an integer count.
 
 ### 2.7 Database Additions (`db/models.py`)
 
@@ -448,7 +506,7 @@ class SignalLog(Base):
     )
 ```
 
-This table is written to during backtests (optional, for debugging/analysis). It is not on the critical path.
+Create this table in Phase 2. Persisting signals to it is explicitly **non-blocking** for the first implementation and may be omitted if it would complicate the core backtest loop.
 
 ### 2.8 CLI (`__main__.py` additions)
 
@@ -463,11 +521,13 @@ Behavior:
 1. Load config.
 2. Initialize logging.
 3. Auto-initialize DB.
-4. Look up strategy from registry by name.
-5. Instantiate strategy with its config path resolved from `AppConfig.strategies`.
-6. Create `HistoricalDataFeed`, load universe data.
-7. Create `BacktestEngine`, run backtest.
-8. Print metrics summary.
+4. Match `--strategy` exactly against `AppConfig.strategies[].name`.
+5. Resolve that strategy's `config_path` against the project `config/` directory.
+6. Look up the strategy class from the registry using the same canonical name.
+7. Instantiate the strategy with the resolved absolute `config_path` and `config.indicators`.
+8. Create `HistoricalDataFeed`, load universe data.
+9. Create `BacktestEngine`, run backtest.
+10. Print metrics summary.
 
 **Required output format:**
 
@@ -491,6 +551,7 @@ Rules:
 - `total_trades` as integer, right-aligned.
 - `avg_holding_days` to 2 decimal places.
 - The header line shows strategy name and date range.
+- `--strategy` must use the canonical lowercase snake_case strategy name from config and the registry.
 - Exit code `0` on success, non-zero on failure.
 
 ---
@@ -506,8 +567,8 @@ All checks must pass before moving to Phase 3.
    - `SignalDirection` enum has `BUY` and `SELL` values
 
 2. **Strategy registry** (`test_registry.py`)
-   - `@register` decorator adds strategy to registry
-   - Duplicate name raises `ValueError`
+   - `@register("example_strategy")` adds strategy to registry
+   - Duplicate canonical strategy name raises `ValueError`
    - `get_strategy()` returns the registered class
    - `get_strategy()` raises `KeyError` for unknown name
    - `list_strategies()` returns all registered names
@@ -519,8 +580,9 @@ All checks must pass before moving to Phase 3.
    - **Price below SMA(200)** → no BUY signal
    - **SMA(20) < SMA(50)** → no BUY signal
    - **Volume below threshold** → no BUY signal
-   - **RSI > 70 on existing position** → SELL signal with reason containing "overbought"
+   - **RSI > 70** → SELL signal with reason containing "overbought"
    - **SMA(20) crosses below SMA(50)** → SELL signal with reason containing "trend reversal"
+   - **Required indicator column missing** → `StrategyError`
 
 4. **Backtest engine** (`test_backtest_engine.py`)
    - **No look-ahead bias**: strategy at date T receives data only up to T. Mock strategy that records the max date it sees; assert it never exceeds the current simulation date.
@@ -529,6 +591,10 @@ All checks must pass before moving to Phase 3.
    - **Time stop**: position held for `time_stop_days` exits at close.
    - **Force close at backtest end**: open positions are closed on the last date.
    - **Slippage applied**: entry price = close * (1 + slippage_pct).
+   - **SELL without open position**: SELL signal is ignored.
+   - **No same-day re-entry**: symbol exited on date T does not reopen on T.
+   - **Deterministic BUY ordering**: stronger signal wins first; symbol name breaks ties.
+   - **Invalid signal payload**: engine raises `StrategyError`
 
 5. **Metrics** (`test_metrics.py`)
    Given a known sequence of trades and equity curve:
@@ -545,7 +611,7 @@ All checks must pass before moving to Phase 3.
 1. **Full backtest** — Run ETF Momentum backtest over 2024-01-01 to 2024-12-31 using real Alpaca historical data:
    - Completes without errors
    - Generates at least 1 trade
-   - All metrics are finite numbers (no NaN/Inf)
+   - No metric is NaN; `profit_factor` may be `inf` only in the no-losing-trades case
    - Equity curve has one entry per trading day
    - `total_trades` > 0
 
