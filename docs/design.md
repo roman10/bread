@@ -57,9 +57,24 @@ bread/
 │   │   ├── tracker.py            # P&L tracking
 │   │   ├── journal.py            # Trade journal
 │   │   └── alerts.py             # Discord/email via apprise
-│   └── db/
-│       ├── database.py           # SQLite connection
-│       └── models.py             # SQLAlchemy ORM
+│   ├── db/
+│   │   ├── database.py           # SQLite connection
+│   │   └── models.py             # SQLAlchemy ORM
+│   └── dashboard/
+│       ├── app.py                # Dash app factory + layout
+│       ├── pages/
+│       │   ├── portfolio.py      # Portfolio overview (home page)
+│       │   ├── backtest.py       # Backtest results explorer
+│       │   ├── trades.py         # Trade journal viewer
+│       │   └── settings.py       # Config editor
+│       ├── components/
+│       │   ├── charts.py         # Candlestick, equity curve, drawdown
+│       │   ├── tables.py         # AG Grid tables for trades, positions
+│       │   └── cards.py          # KPI cards (P&L, Sharpe, exposure)
+│       └── callbacks/
+│           ├── portfolio_cb.py   # Portfolio page callbacks
+│           ├── backtest_cb.py    # Backtest page callbacks
+│           └── trades_cb.py      # Trades page callbacks
 ├── tests/
 │   ├── conftest.py
 │   ├── unit/
@@ -241,9 +256,10 @@ Refresh data → Evaluate strategies → Risk-check signals → Execute orders �
 ### CLI (`__main__.py`)
 
 `typer`-based CLI:
-- `bread run` — start the trading bot
+- `bread run` — start the trading bot (add `--dashboard` to serve web UI on `:8050`)
 - `bread backtest` — run historical backtest
 - `bread status` — show current portfolio and P&L
+- `bread dashboard` — launch dashboard standalone (read-only, no trading)
 
 ---
 
@@ -266,6 +282,97 @@ Via `apprise` (Discord, email, Slack):
 
 ---
 
+## Dashboard (Phase 5)
+
+### Tech Stack
+
+| Component | Choice | Why |
+|-----------|--------|-----|
+| Framework | **Dash 3.x** (MIT license) | Python-native, battle-tested in finance, no JS toolchain |
+| Charting | **dash-tradingview** | TradingView Lightweight Charts inside Dash — professional candlestick/OHLCV rendering |
+| Tables | **dash-ag-grid** | Sortable, filterable financial tables with mini-charts in cells |
+| Layout | **dash-bootstrap-components** | Responsive grid, modals, alerts — Bootstrap 5 |
+| Real-time | **dcc.Interval** + **dash-socketio** | Polling for periodic refresh, WebSocket push for trade fill events |
+| Server | **gunicorn** (production), Dash dev server (local) | Standard Flask deployment |
+
+### Dependencies
+
+```
+dash>=3.0
+dash-bootstrap-components>=1.6
+dash-ag-grid>=31.0
+dash-tradingview>=0.0.5
+dash-socketio>=0.3
+```
+
+### Pages
+
+#### Portfolio Overview (home: `/`)
+
+The primary dashboard view. Displays at a glance:
+
+- **KPI cards** — Total equity, daily P&L ($ and %), open positions count, buying power remaining, current drawdown from peak
+- **Equity curve** — Line chart of portfolio value over time (from `portfolio_snapshots` table)
+- **Open positions table** — AG Grid showing symbol, entry price, current price, unrealized P&L, stop-loss level, days held
+- **Exposure breakdown** — Pie/bar chart of sector allocation vs. hard limits
+- **Auto-refresh** — `dcc.Interval` at 15s during market hours, 5min after hours
+
+#### Backtest Explorer (`/backtest`)
+
+Interactive backtest result visualization:
+
+- **Strategy selector** + date range picker → triggers backtest run or loads cached results
+- **Candlestick chart** — TradingView chart with entry/exit markers overlaid, indicator overlays (SMA, RSI, Bollinger Bands) toggled via checkboxes
+- **Equity curve** — Portfolio value over backtest period with drawdown shading
+- **Metrics panel** — Total return, CAGR, Sharpe, Sortino, max drawdown, win rate, profit factor, avg holding period
+- **Trade list** — AG Grid of all backtest trades, click-to-highlight on chart
+
+#### Trade Journal (`/trades`)
+
+Historical trade browser:
+
+- **Filterable AG Grid** — All executed trades with columns: date, symbol, direction, entry/exit prices, P&L, strategy, hold duration, risk metrics at entry
+- **Trade detail panel** — Click a row to see: entry/exit reasoning (from signals log), chart snapshot around trade period, risk state at time of entry
+- **Summary stats** — Win rate, average win/loss, expectancy, P&L by strategy, P&L by symbol
+
+#### Settings (`/settings`)
+
+Config viewer and editor:
+
+- **Current config display** — Renders active YAML config as a structured form (read from Pydantic models via `.model_dump()`)
+- **Editable fields** — Risk limits, indicator parameters, strategy toggles, alert preferences
+- **Validation** — Pydantic validates on submit, shows errors inline
+- **Save** — Writes updated YAML, requires restart confirmation for live changes
+
+### Integration with Trading Bot
+
+The dashboard runs **in the same process** as the trading bot:
+
+```
+bread run --mode paper --dashboard
+```
+
+- `APScheduler` runs the trading tick cycle in the background
+- Dash serves the UI on a configurable port (default `:8050`)
+- Both share the same SQLAlchemy engine and session factory
+- The event bus pushes trade events to the dashboard via `dash-socketio`
+- Without `--dashboard`, the bot runs headless (CLI-only, current behavior preserved)
+
+### Callback Structure
+
+Callbacks are organized by page to prevent a monolithic callback file:
+
+- Each page module registers its own callbacks via `dash.callback`
+- Callbacks query SQLAlchemy directly (read-only for portfolio/trades, read-write for settings)
+- Long-running operations (backtest execution) use Dash 3.x `background_callback` with a `diskcache` backend to avoid blocking the UI
+- Error states in callbacks return user-friendly alert components, never raise exceptions
+
+### Authentication
+
+Not needed initially (single-user, localhost). Future option: `dash-auth` basic auth or reverse proxy (nginx) with HTTP basic auth for remote access.
+
+---
+
 ## Architecture Principles
 
 1. **Bracket orders over software stops** — Alpaca executes stops even if bot crashes
@@ -284,8 +391,9 @@ Via `apprise` (Discord, email, Slack):
 | 2. Strategy + Backtest | Pending | Strategy framework, ETF momentum, backtest engine |
 | 3. Execution + Paper | Pending | Execution engine, orchestrator, paper trading |
 | 4. Monitoring | Pending | Trade journal, P&L tracker, alerts |
-| 5. Validation | Pending | 2-4 weeks paper trading, tuning |
-| 6. Go Live | Pending | Live with minimal capital, gradual scaling |
+| 5. Dashboard (UI) | Pending | Dash-based web dashboard |
+| 6. Validation | Pending | 2-4 weeks paper trading, tuning |
+| 7. Go Live | Pending | Live with minimal capital, gradual scaling |
 
 ### Phase 1 Implementation Notes
 
