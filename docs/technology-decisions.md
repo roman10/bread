@@ -84,7 +84,7 @@
 | Database | SQLite via `SQLAlchemy` | Zero-ops, single file |
 | Scheduling | `APScheduler` | In-process, cron-like triggers |
 | HTTP | `httpx` | Modern async client |
-| Logging | `structlog` | Structured JSON, great for debugging |
+| Logging | Standard `logging` module | Fewer dependencies, structured JSON output via a custom formatter is sufficient for this system |
 | Testing | `pytest` + `pytest-asyncio` | Standard, good async support |
 | Alerting | `apprise` | One library for Discord/email/Slack |
 | CLI | `typer` | Simple CLI framework |
