@@ -8,9 +8,9 @@ Set up project scaffolding, configuration, database, data pipeline, and technica
 
 ## Implementation Readiness
 
-**Status:** Ready for implementation.
+**Status:** Complete.
 
-Scope has been trimmed to only what Phase 1 functionally needs. Deferred to their owning phases:
+Scope was trimmed to only what Phase 1 functionally needs. Deferred to their owning phases:
 
 - **Domain models** (Signal, Order, Position, PortfolioSnapshot) → Phase 2
 - **Event bus** → Phase 2

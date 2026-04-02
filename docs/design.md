@@ -276,16 +276,37 @@ Via `apprise` (Discord, email, Slack):
 
 ---
 
-## Implementation Roadmap
+## Implementation Status
 
-| Phase | Timeline | Deliverable |
-|-------|----------|-------------|
-| 1. Foundation | Week 1-2 | Scaffolding, config, database, data pipeline, indicators |
-| 2. Strategy + Backtest | Week 3 | Strategy framework, ETF momentum, backtest engine |
-| 3. Execution + Paper | Week 4 | Execution engine, orchestrator, paper trading |
-| 4. Monitoring | Week 5 | Trade journal, P&L tracker, alerts |
-| 5. Validation | Week 6-8 | 2-4 weeks paper trading, tuning |
-| 6. Go Live | Week 9+ | Live with minimal capital, gradual scaling |
+| Phase | Status | Deliverable |
+|-------|--------|-------------|
+| 1. Foundation | **Complete** | Scaffolding, config, database, data pipeline, indicators |
+| 2. Strategy + Backtest | Pending | Strategy framework, ETF momentum, backtest engine |
+| 3. Execution + Paper | Pending | Execution engine, orchestrator, paper trading |
+| 4. Monitoring | Pending | Trade journal, P&L tracker, alerts |
+| 5. Validation | Pending | 2-4 weeks paper trading, tuning |
+| 6. Go Live | Pending | Live with minimal capital, gradual scaling |
+
+### Phase 1 Implementation Notes
+
+Completed modules:
+- `core/config.py` — Pydantic v2 config with YAML loading, deep merge, env-var secrets
+- `core/exceptions.py` — Full exception hierarchy
+- `core/logging.py` — JSON-formatted logging to stdout
+- `data/provider.py` — Abstract `DataProvider` with `get_bars()` contract
+- `data/alpaca_data.py` — Alpaca `StockHistoricalDataClient` with tenacity retries
+- `data/cache.py` — SQLite bar cache with NYSE trading-day staleness logic
+- `data/indicators.py` — pandas-ta indicator computation with configurable parameters
+- `db/models.py` — SQLAlchemy 2.0+ ORM (`MarketDataCache` table)
+- `db/database.py` — Engine, session factory, path resolution
+- `__main__.py` — Typer CLI with `bread db init` and `bread fetch <SYMBOL>`
+
+Deferred from Phase 1 to their owning phases:
+- Domain models (`Signal`, `Order`, `Position`, `PortfolioSnapshot`) → Phase 2
+- Event bus (`core/events.py`) → Phase 3
+- Finnhub data provider → Phase 2
+- `get_latest_bar()` on DataProvider → Phase 3
+- Additional DB tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) → Phase 2-4
 
 ---
 
