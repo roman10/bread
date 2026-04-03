@@ -419,6 +419,122 @@ class TestDayTradeCount:
         assert engine._get_day_trade_count() == 0
 
 
+class TestReconcileOrders:
+    def test_updates_filled_order(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        # Insert a pending order
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-1", symbol="SPY", side="BUY", qty=10,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        # Broker says it's filled
+        fill_time = now + timedelta(minutes=5)
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-1", status="filled", filled_avg_price="502.50",
+                filled_at=fill_time,
+            ),
+        ]
+
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "FILLED"
+            assert order.filled_price == 502.50
+            # SQLite strips tzinfo on round-trip
+            assert order.filled_at_utc == fill_time.replace(tzinfo=None)
+
+    def test_updates_cancelled_order(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-2", symbol="QQQ", side="BUY", qty=5,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-2", status="cancelled", filled_avg_price=None,
+                filled_at=None,
+            ),
+        ]
+
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "CANCELLED"
+            assert order.filled_price is None
+
+    def test_skips_already_filled(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-3", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_price=500.0, filled_at_utc=now,
+            ))
+            session.commit()
+
+        # Should not even fetch broker orders since no pending
+        engine._reconcile_orders()
+        mock_broker.get_orders.assert_not_called()
+
+    def test_broker_failure_handled(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-4", symbol="SPY", side="BUY", qty=10,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        mock_broker.get_orders.side_effect = Exception("API down")
+
+        # Should not raise
+        engine._reconcile_orders()
+
+        # Order should remain unchanged
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "PENDING"
+
+    def test_skips_orders_without_broker_id(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            # Rejected orders have no broker_order_id
+            session.add(OrderLog(
+                broker_order_id=None, symbol="SPY", side="BUY", qty=10,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        mock_broker.get_orders.return_value = []
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "PENDING"
+
+
 class TestProcessSignalsExceptionPaths:
     def test_get_orders_failure_proceeds(self, monkeypatch) -> None:
         """When get_orders raises, processing continues with empty pending set."""

@@ -100,3 +100,100 @@ class TestFetch:
 
         assert result.exit_code == 0
         assert "SYMBOL=SPY" in result.stdout
+
+
+class TestJournal:
+    @pytest.mark.usefixtures("_config_env")
+    def test_journal_empty_db(self) -> None:
+        result = runner.invoke(app, ["journal"])
+        assert result.exit_code == 0
+        assert "Trade Journal" in result.stdout
+        assert "No completed trades" in result.stdout
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_journal_with_trades(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.database import init_db
+        from bread.db.models import OrderLog
+
+        # Get the DB path from the config fixture
+        db_path = str(tmp_path / "test.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        init_db(engine)
+        sf = sessionmaker(bind=engine)
+
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", filled_price=500.0, strategy_name="etf_momentum",
+                reason="rsi bounce", created_at_utc=t1, filled_at_utc=t1,
+            ))
+            session.add(OrderLog(
+                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
+                status="FILLED", filled_price=510.0, strategy_name="etf_momentum",
+                reason="overbought", created_at_utc=t2, filled_at_utc=t2,
+            ))
+            session.commit()
+        engine.dispose()
+
+        result = runner.invoke(app, ["journal", "--days", "365"])
+        assert result.exit_code == 0
+        assert "SPY" in result.stdout
+        assert "Summary" in result.stdout
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_journal_strategy_filter(self) -> None:
+        result = runner.invoke(app, ["journal", "--strategy", "nonexistent"])
+        assert result.exit_code == 0
+        assert "No completed trades" in result.stdout
+
+
+class TestStatusEnhanced:
+    @pytest.mark.usefixtures("_config_env")
+    def test_status_shows_risk_section(self) -> None:
+        mock_broker = MagicMock()
+        mock_broker.get_account.return_value = MagicMock(
+            equity="10000", cash="8000", buying_power="8000",
+            last_equity="9900",
+        )
+        mock_broker.get_positions.return_value = []
+        mock_broker.get_orders.return_value = []
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        assert "Risk Status" in result.stdout
+        assert "Positions:" in result.stdout
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_status_shows_open_orders(self) -> None:
+        mock_broker = MagicMock()
+        mock_broker.get_account.return_value = MagicMock(
+            equity="10000", cash="8000", buying_power="8000",
+            last_equity="9900",
+        )
+        mock_broker.get_positions.return_value = []
+        mock_order = MagicMock()
+        mock_order.symbol = "SPY"
+        mock_order.side = "buy"
+        mock_order.qty = 5
+        mock_order.status = "accepted"
+        mock_broker.get_orders.return_value = [mock_order]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0
+        assert "Open Orders (1)" in result.stdout
+        assert "SPY" in result.stdout

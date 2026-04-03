@@ -118,6 +118,16 @@ class ExecutionSettings(BaseModel):
     take_profit_ratio: float = Field(default=2.0, gt=0)
 
 
+class AlertSettings(BaseModel):
+    enabled: bool = False
+    urls: list[str] = Field(default_factory=list)
+    on_trade: bool = True
+    on_daily_summary: bool = True
+    on_risk_breach: bool = True
+    on_error: bool = True
+    rate_limit_seconds: int = Field(default=60, ge=0)
+
+
 class AppConfig(BaseModel):
     mode: Literal["paper", "live"]
     app: AppSettings = AppSettings()
@@ -129,6 +139,7 @@ class AppConfig(BaseModel):
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
+    alerts: AlertSettings = Field(default_factory=AlertSettings)
 
     @model_validator(mode="after")
     def _check_credentials(self) -> AppConfig:

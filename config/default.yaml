@@ -55,3 +55,12 @@ risk:
 execution:
   tick_interval_minutes: 15
   take_profit_ratio: 2.0
+
+alerts:
+  enabled: false
+  urls: []
+  on_trade: true
+  on_daily_summary: true
+  on_risk_breach: true
+  on_error: true
+  rate_limit_seconds: 60

@@ -1,0 +1,183 @@
+"""Trade journal — query layer on OrderLog for completed round-trips."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import date
+from typing import TYPE_CHECKING
+
+from sqlalchemy import select
+
+from bread.db.models import OrderLog
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JournalEntry:
+    symbol: str
+    strategy_name: str
+    entry_date: date
+    entry_price: float
+    exit_date: date
+    exit_price: float
+    qty: int
+    pnl: float
+    pnl_pct: float
+    hold_days: int
+    entry_reason: str
+    exit_reason: str
+
+
+def get_journal(
+    session: Session,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    strategy: str | None = None,
+    symbol: str | None = None,
+    limit: int = 100,
+) -> list[JournalEntry]:
+    """Query completed round-trip trades from OrderLog.
+
+    Pairs BUY fills with subsequent SELL fills for the same symbol+strategy.
+    Returns entries sorted by exit_date descending (most recent first).
+    """
+    query = (
+        select(OrderLog)
+        .where(OrderLog.status == "FILLED")
+        .order_by(OrderLog.filled_at_utc.asc())
+    )
+
+    rows = session.execute(query).scalars().all()
+
+    # Separate buys and sells
+    buys: dict[tuple[str, str], list[OrderLog]] = {}
+    sells: dict[tuple[str, str], list[OrderLog]] = {}
+
+    for row in rows:
+        key = (row.symbol, row.strategy_name)
+        if row.side == "BUY":
+            buys.setdefault(key, []).append(row)
+        elif row.side == "SELL":
+            sells.setdefault(key, []).append(row)
+
+    # Pair: for each sell, match the earliest unmatched buy (FIFO)
+    entries: list[JournalEntry] = []
+    for key, sell_list in sells.items():
+        buy_list = buys.get(key, [])
+        buy_idx = 0
+        for sell_order in sell_list:
+            if buy_idx >= len(buy_list):
+                logger.debug(
+                    "Orphan SELL for %s/%s — no unmatched BUY",
+                    key[0], key[1],
+                )
+                continue
+
+            buy_order = buy_list[buy_idx]
+            buy_idx += 1
+
+            # Skip if buy happened after sell (shouldn't happen with asc sort, but guard)
+            if (
+                buy_order.filled_at_utc is not None
+                and sell_order.filled_at_utc is not None
+                and buy_order.filled_at_utc > sell_order.filled_at_utc
+            ):
+                logger.debug(
+                    "BUY after SELL for %s — skipping pair",
+                    key[0],
+                )
+                continue
+
+            # Skip if either fill price is missing
+            if buy_order.filled_price is None or sell_order.filled_price is None:
+                logger.debug(
+                    "Missing fill price for %s — skipping pair",
+                    key[0],
+                )
+                continue
+
+            entry_price = float(buy_order.filled_price)
+            exit_price = float(sell_order.filled_price)
+            qty = buy_order.qty
+
+            pnl = round((exit_price - entry_price) * qty, 2)
+            pnl_pct = round(
+                (exit_price - entry_price) / entry_price * 100, 4,
+            ) if entry_price > 0 else 0.0
+
+            entry_dt = (buy_order.filled_at_utc or buy_order.created_at_utc).date()
+            exit_dt = (sell_order.filled_at_utc or sell_order.created_at_utc).date()
+            hold_days = (exit_dt - entry_dt).days
+
+            entry = JournalEntry(
+                symbol=key[0],
+                strategy_name=key[1],
+                entry_date=entry_dt,
+                entry_price=entry_price,
+                exit_date=exit_dt,
+                exit_price=exit_price,
+                qty=qty,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                hold_days=hold_days,
+                entry_reason=buy_order.reason,
+                exit_reason=sell_order.reason,
+            )
+            entries.append(entry)
+
+    # Apply filters
+    if start is not None:
+        entries = [e for e in entries if e.exit_date >= start]
+    if end is not None:
+        entries = [e for e in entries if e.exit_date <= end]
+    if strategy is not None:
+        entries = [e for e in entries if e.strategy_name == strategy]
+    if symbol is not None:
+        entries = [e for e in entries if e.symbol == symbol]
+
+    # Sort by exit_date descending
+    entries.sort(key=lambda e: e.exit_date, reverse=True)
+
+    return entries[:limit]
+
+
+def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
+    """Compute summary stats from journal entries."""
+    if not entries:
+        return {
+            "win_rate_pct": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "expectancy": 0.0,
+            "total_pnl": 0.0,
+            "total_trades": 0,
+            "best_trade": 0.0,
+            "worst_trade": 0.0,
+        }
+
+    wins = [e for e in entries if e.pnl > 0]
+    losses = [e for e in entries if e.pnl <= 0]
+    total = len(entries)
+
+    win_rate = len(wins) / total * 100
+    avg_win = sum(e.pnl for e in wins) / len(wins) if wins else 0.0
+    avg_loss = sum(e.pnl for e in losses) / len(losses) if losses else 0.0
+    total_pnl = sum(e.pnl for e in entries)
+    expectancy = total_pnl / total
+
+    return {
+        "win_rate_pct": win_rate,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "expectancy": expectancy,
+        "total_pnl": total_pnl,
+        "total_trades": total,
+        "best_trade": max(e.pnl for e in entries),
+        "worst_trade": min(e.pnl for e in entries),
+    }

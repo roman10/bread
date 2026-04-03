@@ -242,6 +242,116 @@ def status_cmd() -> None:
         else:
             typer.echo("\nNo open positions")
 
+        # Risk status
+        try:
+            typer.echo("\nRisk Status:")
+            daily_limit = equity * config.risk.max_daily_loss_pct
+            loss_amt = max(0.0, -daily_pnl)  # only show loss magnitude
+            typer.echo(
+                f"  Daily loss: ${loss_amt:,.2f} / "
+                f"${daily_limit:,.2f} "
+                f"({loss_amt / daily_limit * 100:.1f}% of limit)"
+                if daily_limit > 0 else f"  Daily loss: ${loss_amt:,.2f}"
+            )
+
+            dd_limit = config.risk.max_drawdown_pct * 100
+            typer.echo(
+                f"  Drawdown: {drawdown_pct:.1f}% / {dd_limit:.1f}% "
+                f"({drawdown_pct / dd_limit * 100:.1f}% of limit)"
+                if dd_limit > 0 else f"  Drawdown: {drawdown_pct:.1f}%"
+            )
+
+            typer.echo(
+                f"  Positions: {len(positions)} / {config.risk.max_positions}"
+            )
+        except Exception:
+            pass  # Risk status is best-effort
+
+        # Open orders
+        try:
+            open_orders = broker.get_orders(status="open")
+            if open_orders:
+                typer.echo(f"\nOpen Orders ({len(open_orders)}):")
+                for o in open_orders:
+                    sym = o.symbol
+                    side = str(o.side).upper()
+                    qty = o.qty
+                    status = str(o.status).upper()
+                    typer.echo(f"  {sym:<5} {side}  qty={qty}  status={status}")
+            else:
+                typer.echo("\nNo open orders")
+        except Exception:
+            pass  # Open orders is best-effort
+
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+@app.command("journal")
+def journal_cmd(
+    strategy: str = typer.Option(None, "--strategy", help="Filter by strategy name"),
+    symbol: str = typer.Option(None, "--symbol", help="Filter by symbol"),
+    days: int = typer.Option(30, "--days", help="Number of days to look back"),
+) -> None:
+    """Display trade journal entries."""
+    try:
+        config = load_config()
+        setup_logging(config.app.log_level)
+
+        from datetime import timedelta
+
+        engine_db = get_engine(config.db.path)
+        init_db(engine_db)
+        try:
+            sf = get_session_factory(engine_db)
+
+            from bread.monitoring.journal import get_journal, get_journal_summary
+
+            start_date = date.today() - timedelta(days=days)
+            with sf() as session:
+                entries = get_journal(
+                    session,
+                    start=start_date,
+                    strategy=strategy,
+                    symbol=symbol,
+                )
+                summary = get_journal_summary(entries)
+        finally:
+            engine_db.dispose()
+
+        typer.echo(f"Trade Journal (last {days} days)")
+        typer.echo("---")
+
+        if entries:
+            typer.echo(
+                f"{'DATE':<11}{'SYMBOL':<8}{'QTY':>5}  "
+                f"{'ENTRY':>9}  {'EXIT':>9}  {'P&L':>10}  "
+                f"{'HOLD':>5}  {'STRATEGY':<15}{'REASON'}"
+            )
+            for e in entries:
+                sign = "+" if e.pnl >= 0 else ""
+                typer.echo(
+                    f"{e.exit_date.isoformat():<11}{e.symbol:<8}{e.qty:>5}  "
+                    f"${e.entry_price:>8,.2f}  ${e.exit_price:>8,.2f}  "
+                    f"{sign}${e.pnl:>8,.2f}  "
+                    f"{e.hold_days:>4}d  {e.strategy_name:<15}{e.exit_reason}"
+                )
+
+            total_trades = summary["total_trades"]
+            win_rate = summary["win_rate_pct"]
+            total_pnl = summary["total_pnl"]
+            avg_hold = sum(e.hold_days for e in entries) / len(entries)
+            sign = "+" if total_pnl >= 0 else ""
+            typer.echo(
+                f"\nSummary: {total_trades} trades | "
+                f"Win rate: {win_rate:.1f}% | "
+                f"Total P&L: {sign}${total_pnl:,.2f} | "
+                f"Avg hold: {avg_hold:.1f} days"
+            )
+        else:
+            typer.echo("No completed trades in this period.")
+
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc

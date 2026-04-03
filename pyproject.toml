@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "apscheduler>=3.10",
+    "apprise>=1.7",
 ]
 
 [project.optional-dependencies]

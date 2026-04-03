@@ -78,6 +78,61 @@ class ExecutionEngine:
             )
             del self._positions[symbol]
 
+        # Update order fill status
+        self._reconcile_orders()
+
+    def _reconcile_orders(self) -> None:
+        """Update pending/accepted orders with fill status from broker."""
+        try:
+            with self._session_factory() as session:
+                pending = session.execute(
+                    select(OrderLog).where(
+                        OrderLog.status.in_(["PENDING", "ACCEPTED"])
+                    )
+                ).scalars().all()
+
+                if not pending:
+                    return
+
+                try:
+                    broker_orders = self._broker.get_orders(status="all")
+                except Exception:
+                    logger.exception("Failed to fetch orders for reconciliation")
+                    return
+
+                broker_map = {str(o.id): o for o in broker_orders}
+
+                for order in pending:
+                    if not order.broker_order_id:
+                        continue
+                    broker_order = broker_map.get(order.broker_order_id)
+                    if broker_order is None:
+                        continue
+
+                    new_status = str(broker_order.status).upper()
+                    if new_status == order.status:
+                        continue
+
+                    order.status = new_status
+                    if new_status == "FILLED":
+                        order.filled_price = float(broker_order.filled_avg_price or 0)
+                        order.filled_at_utc = broker_order.filled_at
+                        logger.info(
+                            "Order %s filled: %s %s @ %.2f",
+                            order.broker_order_id, order.side, order.symbol,
+                            order.filled_price,
+                        )
+                    elif new_status in ("CANCELLED", "REJECTED"):
+                        logger.info(
+                            "Order %s %s: %s %s",
+                            order.broker_order_id, new_status.lower(),
+                            order.side, order.symbol,
+                        )
+
+                session.commit()
+        except Exception:
+            logger.exception("Failed to reconcile orders")
+
     def process_signals(
         self,
         signals: list[Signal],
@@ -201,6 +256,10 @@ class ExecutionEngine:
     def get_positions(self) -> list[Position]:
         """Return current tracked positions."""
         return list(self._positions.values())
+
+    def get_account(self) -> object:
+        """Return the broker account object."""
+        return self._broker.get_account()
 
     def get_equity(self) -> float:
         """Return current account equity from broker."""
