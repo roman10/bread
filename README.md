@@ -79,6 +79,9 @@ Supports Discord, Slack, and email via [Apprise](https://github.com/caronc/appri
 ## Quick Start
 
 ```bash
+# Activate the virtual environment
+source .venv/bin/activate
+
 # 1. Initialize the database
 python -m bread db init
 
@@ -116,6 +119,7 @@ You can also use the installed entry point directly: `bread <command>`.
 ## Running the Trading Bot
 
 ```bash
+source .venv/bin/activate
 python -m bread run --mode paper
 ```
 
@@ -202,9 +206,11 @@ The dashboard is read-only — it queries the database and Alpaca API but never 
 
 ```bash
 # Terminal 1: trading bot
+source .venv/bin/activate
 python -m bread run --mode paper
 
 # Terminal 2: dashboard
+source .venv/bin/activate
 python -m bread dashboard
 ```
 
@@ -300,6 +306,9 @@ bread/
 ## Development
 
 ```bash
+# Activate the virtual environment
+source .venv/bin/activate
+
 # Run tests
 pytest
 
