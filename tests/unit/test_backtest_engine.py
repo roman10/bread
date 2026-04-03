@@ -341,3 +341,64 @@ class TestEmptyUniverse:
         engine = BacktestEngine(strat, _make_config())
         with pytest.raises(BacktestError, match="empty"):
             engine.run({}, date(2024, 1, 1), date(2024, 12, 31))
+
+
+class TestCommission:
+    def test_pnl_accounts_for_round_trip_commission(self) -> None:
+        """PnL = (exit - entry) * shares - 2 * commission."""
+        bars = _make_bars(periods=3, base_close=100.0)
+        sim_dates = [d.date() for d in bars.index]
+
+        strat = MockStrategy(signals_by_date={
+            sim_dates[0]: [_make_signal("SPY")],
+        })
+
+        commission = 5.0
+        engine = BacktestEngine(strat, _make_config(
+            slippage_pct=0.0, commission_per_trade=commission,
+        ))
+        result = engine.run({"SPY": bars}, sim_dates[0], sim_dates[-1])
+
+        assert len(result.trades) == 1
+        trade = result.trades[0]
+        expected_pnl = (trade.exit_price - trade.entry_price) * trade.shares - 2 * commission
+        assert trade.pnl == pytest.approx(expected_pnl, abs=0.01)
+
+    def test_commission_reduces_cash(self) -> None:
+        """Final equity should be less than initial when flat price + commission."""
+        closes = [100.0] * 5
+        bars = _make_bars(closes=closes, lows=[98.0] * 5)
+        sim_dates = [d.date() for d in bars.index]
+
+        strat = MockStrategy(signals_by_date={
+            sim_dates[0]: [_make_signal("SPY")],
+        })
+
+        commission = 10.0
+        engine = BacktestEngine(strat, _make_config(
+            initial_capital=10000.0, slippage_pct=0.0, commission_per_trade=commission,
+        ))
+        result = engine.run({"SPY": bars}, sim_dates[0], sim_dates[-1])
+
+        # Flat price, so only commissions cause loss: 2 * 10 = 20
+        assert result.final_equity < 10000.0
+        assert result.final_equity == pytest.approx(10000.0 - 2 * commission, abs=0.01)
+
+    def test_final_equity_reflects_force_close_commission(self) -> None:
+        """Equity curve last point should include force-close commission."""
+        closes = [100.0] * 3
+        bars = _make_bars(closes=closes, lows=[98.0] * 3)
+        sim_dates = [d.date() for d in bars.index]
+
+        strat = MockStrategy(signals_by_date={
+            sim_dates[0]: [_make_signal("SPY")],
+        })
+
+        commission = 5.0
+        engine = BacktestEngine(strat, _make_config(
+            slippage_pct=0.0, commission_per_trade=commission,
+        ))
+        result = engine.run({"SPY": bars}, sim_dates[0], sim_dates[-1])
+
+        # Final equity = last equity curve point
+        assert result.final_equity == float(result.equity_curve.iloc[-1])

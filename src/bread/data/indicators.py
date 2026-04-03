@@ -24,15 +24,7 @@ def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.Data
     Returns a copy with leading NaN rows trimmed.
     Raises InsufficientHistoryError if the input is too short.
     """
-    longest_window = max(
-        max(settings.sma_periods),
-        max(settings.ema_periods),
-        settings.rsi_period,
-        settings.macd_slow + settings.macd_signal,
-        settings.atr_period,
-        settings.bollinger_period,
-        settings.volume_sma_period,
-    )
+    longest_window = settings.longest_window
     if len(df) < longest_window:
         raise InsufficientHistoryError(
             f"Need at least {longest_window} rows, got {len(df)}"

@@ -8,8 +8,8 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from bread.backtest.engine import Trade
 from bread.backtest.metrics import compute_metrics
+from bread.backtest.models import Trade
 from bread.core.models import SignalDirection
 
 
@@ -141,3 +141,46 @@ class TestMetricsEdgeCases:
         for key, val in m.items():
             if isinstance(val, float):
                 assert not math.isnan(val), f"{key} is NaN"
+
+    def test_flat_equity_returns_zero_sharpe(self) -> None:
+        equity = pd.Series(
+            [10000.0, 10000.0, 10000.0, 10000.0],
+            index=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5)],
+        )
+        m = compute_metrics([], equity, 10000.0)
+        assert m["sharpe_ratio"] == 0.0
+        assert m["sortino_ratio"] == 0.0
+        assert m["total_return_pct"] == 0.0
+
+    def test_all_losing_trades(self) -> None:
+        equity = pd.Series(
+            [10000.0, 9800.0, 9600.0],
+            index=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+        )
+        trades = [_make_trade(-200.0), _make_trade(-200.0)]
+        m = compute_metrics(trades, equity, 10000.0)
+
+        assert m["win_rate_pct"] == 0.0
+        assert m["profit_factor"] == 0.0
+        assert m["total_return_pct"] < 0
+
+    def test_zero_duration_trade(self) -> None:
+        """Trade entered and exited on the same date."""
+        t = _make_trade(50.0, entry_date=date(2024, 1, 2), exit_date=date(2024, 1, 2))
+        equity = pd.Series(
+            [10000.0, 10050.0],
+            index=[date(2024, 1, 2), date(2024, 1, 3)],
+        )
+        m = compute_metrics([t], equity, 10000.0)
+        assert m["avg_holding_days"] == 0.0
+        assert m["total_trades"] == 1
+
+    def test_negative_equity(self) -> None:
+        """Drawdown still computable when equity dips (extreme scenario)."""
+        equity = pd.Series(
+            [10000.0, 5000.0, 8000.0],
+            index=[date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)],
+        )
+        m = compute_metrics([], equity, 10000.0)
+        assert m["max_drawdown_pct"] == pytest.approx(50.0)
+        assert m["total_return_pct"] == pytest.approx(-20.0)

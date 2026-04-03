@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
 from datetime import date
 
 import pandas as pd
 
+from bread.backtest.metrics import compute_metrics
+from bread.backtest.models import BacktestResult, Trade
 from bread.core.config import AppConfig
 from bread.core.exceptions import BacktestError, StrategyError
 from bread.core.models import SignalDirection
@@ -17,30 +18,6 @@ from bread.strategy.base import Strategy
 logger = logging.getLogger(__name__)
 
 MAX_POSITIONS = 5
-
-
-@dataclass
-class Trade:
-    symbol: str
-    direction: SignalDirection
-    entry_date: date
-    entry_price: float
-    exit_date: date | None = None
-    exit_price: float | None = None
-    shares: int = 0
-    stop_loss_price: float | None = None
-    pnl: float = 0.0
-    exit_reason: str = ""
-    _trading_days_held: int = field(default=0, repr=False)
-
-
-@dataclass
-class BacktestResult:
-    trades: list[Trade]
-    equity_curve: pd.Series
-    metrics: dict[str, float | int]
-    initial_capital: float
-    final_equity: float
 
 
 class BacktestEngine:
@@ -246,8 +223,6 @@ class BacktestEngine:
         equity_curve.index.name = "date"
 
         # Compute metrics
-        from bread.backtest.metrics import compute_metrics
-
         metrics = compute_metrics(closed_trades, equity_curve, self._initial_capital)
 
         final_equity = (

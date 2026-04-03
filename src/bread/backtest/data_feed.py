@@ -15,19 +15,6 @@ from bread.data.provider import DataProvider
 logger = logging.getLogger(__name__)
 
 
-def _longest_indicator_window(config: AppConfig) -> int:
-    s = config.indicators
-    return max(
-        max(s.sma_periods),
-        max(s.ema_periods),
-        s.rsi_period,
-        s.macd_slow + s.macd_signal,
-        s.atr_period,
-        s.bollinger_period,
-        s.volume_sma_period,
-    )
-
-
 class HistoricalDataFeed:
     def __init__(self, provider: DataProvider, config: AppConfig) -> None:
         self._provider = provider
@@ -43,7 +30,7 @@ class HistoricalDataFeed:
 
         Returns dict of symbol -> enriched DataFrame filtered to [start, end].
         """
-        longest = _longest_indicator_window(self._config)
+        longest = self._config.indicators.longest_window
         fetch_start = start - timedelta(days=int(longest * 1.5))
 
         result: dict[str, pd.DataFrame] = {}

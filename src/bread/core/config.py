@@ -66,6 +66,19 @@ class IndicatorSettings(BaseModel):
     bollinger_stddev: float = 2.0
     volume_sma_period: int = 20
 
+    @property
+    def longest_window(self) -> int:
+        """Longest lookback window across all indicator configurations."""
+        return max(
+            max(self.sma_periods),
+            max(self.ema_periods),
+            self.rsi_period,
+            self.macd_slow + self.macd_signal,
+            self.atr_period,
+            self.bollinger_period,
+            self.volume_sma_period,
+        )
+
 
 class StrategySettings(BaseModel):
     name: str  # canonical snake_case identifier

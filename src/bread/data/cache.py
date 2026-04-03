@@ -113,15 +113,7 @@ class BarCache:
 
     def _refresh(self, symbol: str, timeframe: str, target_day: date) -> None:
         """Fetch full lookback from provider and upsert into cache."""
-        longest_indicator = max(
-            max(self._config.indicators.sma_periods),
-            max(self._config.indicators.ema_periods),
-            self._config.indicators.rsi_period,
-            self._config.indicators.macd_slow + self._config.indicators.macd_signal,
-            self._config.indicators.atr_period,
-            self._config.indicators.bollinger_period,
-            self._config.indicators.volume_sma_period,
-        )
+        longest_indicator = self._config.indicators.longest_window
         # Need lookback_days usable bars + warmup for longest indicator.
         # ~1.45 calendar days per trading day, with margin.
         trading_days_needed = self._config.data.lookback_days + longest_indicator

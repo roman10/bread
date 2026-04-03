@@ -6,7 +6,7 @@ import math
 
 import pandas as pd
 
-from bread.backtest.engine import Trade
+from bread.backtest.models import Trade
 
 
 def compute_metrics(
