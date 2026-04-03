@@ -88,13 +88,63 @@ class TestTick:
             import pandas as pd
             mock_bars = pd.DataFrame({"close": [500.0]})
             mock_cache_inst = mock_cache_cls.return_value
-            mock_cache_inst.get_bars.return_value = mock_bars
+            mock_cache_inst.get_bars_batch.return_value = {"SPY": mock_bars}
             mock_compute.return_value = mock_bars
 
             app_module.tick()
 
         mock_strategy.evaluate.assert_called_once()
         # Restore
+        app_module._strategies = []
+
+    @patch.object(app_module, "_engine")
+    @patch.object(app_module, "_config")
+    @patch.object(app_module, "_provider")
+    @patch.object(app_module, "_session_factory")
+    def test_tick_deduplicates_symbols_across_strategies(
+        self,
+        mock_sf: MagicMock,
+        mock_provider: MagicMock,
+        mock_config: MagicMock,
+        mock_engine: MagicMock,
+    ) -> None:
+        """Multiple strategies sharing symbols should trigger one batch fetch."""
+        strat1 = MagicMock()
+        strat1.universe = ["SPY", "QQQ"]
+        strat1.name = "s1"
+        strat1.evaluate.return_value = []
+        strat2 = MagicMock()
+        strat2.universe = ["SPY", "IWM"]
+        strat2.name = "s2"
+        strat2.evaluate.return_value = []
+        app_module._strategies = [strat1, strat2]
+
+        mock_session = MagicMock()
+        mock_sf.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_sf.return_value.__exit__ = MagicMock(return_value=False)
+        mock_engine.get_positions.return_value = []
+
+        with patch("bread.app.BarCache") as mock_cache_cls, \
+             patch("bread.app.compute_indicators") as mock_compute:
+            import pandas as pd
+            mock_bars = pd.DataFrame({"close": [500.0]})
+            mock_cache_inst = mock_cache_cls.return_value
+            mock_cache_inst.get_bars_batch.return_value = {
+                "SPY": mock_bars, "QQQ": mock_bars, "IWM": mock_bars
+            }
+            mock_compute.return_value = mock_bars
+
+            app_module.tick()
+
+        # get_bars_batch called once with deduplicated symbols
+        mock_cache_inst.get_bars_batch.assert_called_once()
+        fetched_symbols = mock_cache_inst.get_bars_batch.call_args[0][0]
+        assert fetched_symbols == ["SPY", "QQQ", "IWM"]  # deduplicated, order preserved
+
+        # Both strategies evaluated
+        strat1.evaluate.assert_called_once()
+        strat2.evaluate.assert_called_once()
+
         app_module._strategies = []
 
 

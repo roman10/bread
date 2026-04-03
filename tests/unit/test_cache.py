@@ -189,3 +189,95 @@ class TestBarCache:
         # With default config (SMA-200, lookback_days=200), we need at least
         # (200 + 200) trading days ≈ 570+ calendar days, not just 300.
         assert calendar_days_requested >= 500
+
+
+class TestBarCacheBatch:
+    def test_batch_fetch_all_stale(
+        self, db_session: Session, paper_config: AppConfig
+    ) -> None:
+        """First batch call should trigger a single batch API request."""
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2025, 1, 2), 30)
+        qqq_df = _make_ohlcv_df(date(2025, 1, 2), 30)
+        provider.get_bars_batch.return_value = {"SPY": spy_df, "QQQ": qqq_df}
+
+        cache = BarCache(db_session, provider, paper_config)
+        et = ZoneInfo("America/New_York")
+        as_of = datetime(2025, 2, 14, 17, 0, tzinfo=et).astimezone(UTC)
+
+        result = cache.get_bars_batch(["SPY", "QQQ"], as_of_utc=as_of)
+
+        assert "SPY" in result
+        assert "QQQ" in result
+        provider.get_bars_batch.assert_called_once()
+        provider.get_bars.assert_not_called()
+
+    def test_batch_fetch_all_fresh(
+        self, db_session: Session, paper_config: AppConfig
+    ) -> None:
+        """If all symbols are cached, no API call should be made."""
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2025, 1, 2), 35)
+        qqq_df = _make_ohlcv_df(date(2025, 1, 2), 35)
+        provider.get_bars_batch.return_value = {"SPY": spy_df, "QQQ": qqq_df}
+
+        cache = BarCache(db_session, provider, paper_config)
+        et = ZoneInfo("America/New_York")
+        as_of = datetime(2025, 2, 14, 17, 0, tzinfo=et).astimezone(UTC)
+
+        # First call populates cache
+        cache.get_bars_batch(["SPY", "QQQ"], as_of_utc=as_of)
+        provider.get_bars_batch.reset_mock()
+
+        # Second call at same as_of should be all cache hits
+        result = cache.get_bars_batch(["SPY", "QQQ"], as_of_utc=as_of)
+
+        assert "SPY" in result
+        assert "QQQ" in result
+        provider.get_bars_batch.assert_not_called()
+
+    def test_batch_fetch_mixed_stale_fresh(
+        self, db_session: Session, paper_config: AppConfig
+    ) -> None:
+        """Only stale symbols should be fetched in the batch call."""
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2025, 1, 2), 35)
+        qqq_df = _make_ohlcv_df(date(2025, 1, 2), 35)
+        provider.get_bars_batch.return_value = {"SPY": spy_df, "QQQ": qqq_df}
+
+        cache = BarCache(db_session, provider, paper_config)
+        et = ZoneInfo("America/New_York")
+        as_of_fri = datetime(2025, 2, 14, 17, 0, tzinfo=et).astimezone(UTC)
+
+        # Pre-populate only SPY
+        provider.get_bars.return_value = spy_df
+        cache.get_bars("SPY", as_of_utc=as_of_fri)
+        provider.get_bars_batch.reset_mock()
+
+        # Batch fetch both — SPY is fresh, QQQ is stale
+        provider.get_bars_batch.return_value = {"QQQ": qqq_df}
+        result = cache.get_bars_batch(["SPY", "QQQ"], as_of_utc=as_of_fri)
+
+        assert "SPY" in result
+        assert "QQQ" in result
+        # Batch should only include the stale symbol
+        call_args = provider.get_bars_batch.call_args
+        assert call_args[0][0] == ["QQQ"]
+
+    def test_batch_partial_failure(
+        self, db_session: Session, paper_config: AppConfig
+    ) -> None:
+        """If a symbol is missing from batch response, it's omitted from result."""
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2025, 1, 2), 30)
+        # Batch returns only SPY, not MISSING
+        provider.get_bars_batch.return_value = {"SPY": spy_df}
+
+        cache = BarCache(db_session, provider, paper_config)
+        et = ZoneInfo("America/New_York")
+        as_of = datetime(2025, 2, 14, 17, 0, tzinfo=et).astimezone(UTC)
+
+        result = cache.get_bars_batch(["SPY", "MISSING"], as_of_utc=as_of)
+
+        assert "SPY" in result
+        assert "MISSING" not in result

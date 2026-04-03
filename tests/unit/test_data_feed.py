@@ -9,7 +9,6 @@ import pandas as pd
 
 from bread.backtest.data_feed import HistoricalDataFeed
 from bread.core.config import AppConfig
-from bread.core.exceptions import DataProviderError
 
 
 def _make_config() -> AppConfig:
@@ -39,23 +38,22 @@ class TestLoadUniverse:
     def test_returns_enriched_data_for_valid_symbols(self) -> None:
         config = _make_config()
         provider = MagicMock()
-        # Need enough bars for indicators (longest_window = 200 for default SMA)
         raw = _make_raw_bars("2023-01-02", 300)
-        provider.get_bars.return_value = raw
+        provider.get_bars_batch.return_value = {"SPY": raw}
 
         feed = HistoricalDataFeed(provider, config)
         start = date(2024, 1, 2)
         end = date(2024, 12, 31)
         result = feed.load_universe(["SPY"], start, end)
 
-        provider.get_bars.assert_called_once()
-        # May be empty if raw dates don't overlap [start, end] — but the call succeeded
+        provider.get_bars_batch.assert_called_once()
         assert isinstance(result, dict)
 
-    def test_excludes_symbol_on_data_provider_error(self) -> None:
+    def test_excludes_symbol_missing_from_batch(self) -> None:
         config = _make_config()
         provider = MagicMock()
-        provider.get_bars.side_effect = DataProviderError("API down")
+        # Batch returns empty dict (symbol not available)
+        provider.get_bars_batch.return_value = {}
 
         feed = HistoricalDataFeed(provider, config)
         result = feed.load_universe(["SPY"], date(2024, 1, 1), date(2024, 12, 31))
@@ -66,9 +64,8 @@ class TestLoadUniverse:
     def test_excludes_symbol_on_insufficient_history(self) -> None:
         config = _make_config()
         provider = MagicMock()
-        # Return too few bars for indicators
         raw = _make_raw_bars("2024-01-02", 5)
-        provider.get_bars.return_value = raw
+        provider.get_bars_batch.return_value = {"SPY": raw}
 
         feed = HistoricalDataFeed(provider, config)
         result = feed.load_universe(["SPY"], date(2024, 1, 1), date(2024, 12, 31))
@@ -80,13 +77,8 @@ class TestLoadUniverse:
         provider = MagicMock()
 
         raw = _make_raw_bars("2023-01-02", 300)
-
-        def side_effect(symbol: str, start: date, end: date, tf: str) -> pd.DataFrame:
-            if symbol == "BAD":
-                raise DataProviderError("not found")
-            return raw
-
-        provider.get_bars.side_effect = side_effect
+        # BAD is missing from batch response (Alpaca couldn't find it)
+        provider.get_bars_batch.return_value = {"SPY": raw, "QQQ": raw}
 
         feed = HistoricalDataFeed(provider, config)
         result = feed.load_universe(
@@ -94,32 +86,30 @@ class TestLoadUniverse:
         )
 
         assert "BAD" not in result
-        # SPY and QQQ should be present if dates overlap
-        assert provider.get_bars.call_count == 3
+        provider.get_bars_batch.assert_called_once()
 
     def test_empty_symbols_list(self) -> None:
         config = _make_config()
         provider = MagicMock()
+        provider.get_bars_batch.return_value = {}
 
         feed = HistoricalDataFeed(provider, config)
         result = feed.load_universe([], date(2024, 1, 1), date(2024, 12, 31))
 
         assert result == {}
-        provider.get_bars.assert_not_called()
 
     def test_warmup_extends_fetch_start(self) -> None:
         config = _make_config()
         provider = MagicMock()
-        provider.get_bars.side_effect = DataProviderError("expected")
+        provider.get_bars_batch.return_value = {}
 
         feed = HistoricalDataFeed(provider, config)
         start = date(2024, 6, 1)
         end = date(2024, 12, 31)
         feed.load_universe(["SPY"], start, end)
 
-        call_args = provider.get_bars.call_args
+        call_args = provider.get_bars_batch.call_args
         fetch_start = call_args[0][1]  # second positional arg
-        # fetch_start should be before start by roughly longest_window * 1.5 calendar days
         assert fetch_start < start
         expected_offset = int(config.indicators.longest_window * 1.5)
         assert fetch_start == start - timedelta(days=expected_offset)

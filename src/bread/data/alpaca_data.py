@@ -55,6 +55,9 @@ class AlpacaDataProvider(DataProvider):
             reraise=True,
         )
 
+    # Maximum symbols per batch request to stay within Alpaca limits
+    _BATCH_CHUNK_SIZE = 100
+
     def get_bars(
         self,
         symbol: str,
@@ -70,6 +73,44 @@ class AlpacaDataProvider(DataProvider):
         logger.info("Fetching %s bars for %s from %s to %s", timeframe, symbol, start, end)
         df = self._retrier(self._do_fetch, symbol, start, end, tf)
         return self._normalize(df, symbol)
+
+    def get_bars_batch(
+        self,
+        symbols: list[str],
+        start: date,
+        end: date,
+        timeframe: str,
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch bars for multiple symbols in batched API calls."""
+        symbols = [s.upper() for s in symbols]
+        tf = _TIMEFRAME_MAP.get(timeframe)
+        if tf is None:
+            raise DataProviderError(f"Unsupported timeframe: {timeframe}")
+
+        if not symbols:
+            return {}
+
+        result: dict[str, pd.DataFrame] = {}
+        for i in range(0, len(symbols), self._BATCH_CHUNK_SIZE):
+            chunk = symbols[i : i + self._BATCH_CHUNK_SIZE]
+            logger.info(
+                "Batch fetching %s bars for %d symbols from %s to %s",
+                timeframe, len(chunk), start, end,
+            )
+            try:
+                df = self._retrier(self._do_fetch_batch, chunk, start, end, tf)
+            except Exception:
+                logger.exception("Batch fetch failed for chunk, falling back to sequential")
+                for sym in chunk:
+                    try:
+                        result[sym] = self.get_bars(sym, start, end, timeframe)
+                    except Exception:
+                        logger.warning("Failed to fetch %s, skipping", sym)
+                continue
+
+            result.update(self._split_batch(df, chunk))
+
+        return result
 
     def _do_fetch(
         self,
@@ -101,6 +142,63 @@ class AlpacaDataProvider(DataProvider):
             raise DataProviderResponseError(f"No data returned for {symbol}")
 
         return df
+
+    def _do_fetch_batch(
+        self,
+        symbols: list[str],
+        start: date,
+        end: date,
+        timeframe: TimeFrame,
+    ) -> pd.DataFrame:
+        try:
+            request = StockBarsRequest(
+                symbol_or_symbols=symbols,
+                timeframe=timeframe,
+                start=start,
+                end=end,
+            )
+            barset = self._client.get_stock_bars(request)
+            df = barset.df  # type: ignore[union-attr]
+        except (ConnectionError, Timeout):
+            raise  # let tenacity handle these directly
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if "401" in exc_str or "403" in exc_str or "forbidden" in exc_str:
+                raise DataProviderAuthError(f"Authentication failed: {exc}") from exc
+            if "429" in exc_str or "rate" in exc_str:
+                raise DataProviderRateLimitError(f"Rate limited: {exc}") from exc
+            raise DataProviderError(f"Alpaca request failed: {exc}") from exc
+
+        if df is None or df.empty:
+            raise DataProviderResponseError(
+                f"No data returned for batch: {symbols}"
+            )
+
+        return df
+
+    def _split_batch(
+        self,
+        df: pd.DataFrame,
+        requested_symbols: list[str],
+    ) -> dict[str, pd.DataFrame]:
+        """Split a MultiIndex batch response into per-symbol normalized DataFrames."""
+        result: dict[str, pd.DataFrame] = {}
+
+        if not isinstance(df.index, pd.MultiIndex):
+            # Single symbol came back (edge case: batch of 1)
+            if len(requested_symbols) == 1:
+                result[requested_symbols[0]] = self._normalize(df, requested_symbols[0])
+            return result
+
+        symbols_in_response = df.index.get_level_values(0).unique()
+        for sym in requested_symbols:
+            if sym not in symbols_in_response:
+                logger.warning("No data returned for %s in batch response", sym)
+                continue
+            sym_df = pd.DataFrame(df.loc[sym]).copy()
+            result[sym] = self._normalize(sym_df, sym)
+
+        return result
 
     @staticmethod
     def _normalize(df: pd.DataFrame, symbol: str) -> pd.DataFrame:

@@ -6,6 +6,7 @@ import logging
 import signal
 import sys
 
+import pandas as pd
 from apscheduler.events import EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -54,20 +55,31 @@ def tick() -> None:
         all_signals: list[Signal] = []
         prices: dict[str, float] = {}
 
-        for strategy in _strategies:
-            with _session_factory() as session:
-                cache = BarCache(session, _provider, _config)
-                universe_data = {}
-                for symbol in strategy.universe:
-                    try:
-                        bars = cache.get_bars(symbol)
-                        enriched = compute_indicators(bars, _config.indicators)
-                        universe_data[symbol] = enriched
-                        prices[symbol] = float(enriched.iloc[-1]["close"])
-                    except Exception:
-                        logger.exception("Failed to load data for %s", symbol)
+        # Collect all unique symbols across strategies and batch-fetch once
+        all_symbols: list[str] = list(
+            dict.fromkeys(sym for s in _strategies for sym in s.universe)
+        )
+        universe_data: dict[str, pd.DataFrame] = {}
 
+        with _session_factory() as session:
+            cache = BarCache(session, _provider, _config)
+            try:
+                bars_map = cache.get_bars_batch(all_symbols)
+            except Exception:
+                logger.exception("Batch data fetch failed")
+                bars_map = {}
+
+            for symbol, bars in bars_map.items():
+                try:
+                    enriched = compute_indicators(bars, _config.indicators)
+                    universe_data[symbol] = enriched
+                    prices[symbol] = float(enriched.iloc[-1]["close"])
+                except Exception:
+                    logger.exception("Failed to compute indicators for %s", symbol)
+
+        for strategy in _strategies:
             # 4. Evaluate strategy
+            signals: list[Signal] = []
             try:
                 signals = strategy.evaluate(universe_data)
                 all_signals.extend(signals)

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from bread.core.config import AppConfig
-from bread.core.exceptions import DataProviderError, InsufficientHistoryError
+from bread.core.exceptions import InsufficientHistoryError
 from bread.data.indicators import compute_indicators
 from bread.data.provider import DataProvider
 
@@ -33,14 +33,15 @@ class HistoricalDataFeed:
         longest = self._config.indicators.longest_window
         fetch_start = start - timedelta(days=int(longest * 1.5))
 
+        raw_batch = self._provider.get_bars_batch(
+            symbols, fetch_start, end, self._config.data.default_timeframe,
+        )
+
         result: dict[str, pd.DataFrame] = {}
 
         for symbol in symbols:
-            try:
-                raw = self._provider.get_bars(
-                    symbol, fetch_start, end, self._config.data.default_timeframe,
-                )
-            except DataProviderError:
+            raw = raw_batch.get(symbol)
+            if raw is None:
                 logger.warning("Failed to fetch data for %s, excluding from universe", symbol)
                 continue
 

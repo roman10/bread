@@ -88,6 +88,34 @@ class BarCache:
 
         return self._load_from_db(symbol, timeframe)
 
+    def get_bars_batch(
+        self,
+        symbols: list[str],
+        timeframe: str | None = None,
+        as_of_utc: datetime | None = None,
+    ) -> dict[str, pd.DataFrame]:
+        """Return cached bars for multiple symbols, batch-fetching stale ones."""
+        symbols = [s.upper() for s in symbols]
+        timeframe = timeframe or self._config.data.default_timeframe
+        as_of_utc = as_of_utc or datetime.now(UTC)
+
+        target_day = last_completed_trading_day(as_of_utc)
+
+        stale = [s for s in symbols if self._is_stale(s, timeframe, target_day)]
+
+        if stale:
+            self._refresh_batch(stale, timeframe, target_day)
+
+        result: dict[str, pd.DataFrame] = {}
+        for symbol in symbols:
+            df = self._load_from_db(symbol, timeframe)
+            if not df.empty:
+                result[symbol] = df
+            else:
+                logger.warning("No cached data for %s after batch refresh", symbol)
+
+        return result
+
     def _is_stale(self, symbol: str, timeframe: str, target_day: date) -> bool:
         """Check whether cached data covers the target trading day."""
         stmt = (
@@ -122,12 +150,7 @@ class BarCache:
 
     def _refresh(self, symbol: str, timeframe: str, target_day: date) -> None:
         """Fetch full lookback from provider and upsert into cache."""
-        longest_indicator = self._config.indicators.longest_window
-        # Need lookback_days usable bars + warmup for longest indicator.
-        # ~1.45 calendar days per trading day, with margin.
-        trading_days_needed = self._config.data.lookback_days + longest_indicator
-        start = target_day - timedelta(days=int(trading_days_needed * 1.5))
-        end = target_day
+        start, end = self._lookback_range(target_day)
 
         logger.info("Refreshing cache for %s/%s: %s to %s", symbol, timeframe, start, end)
         try:
@@ -136,6 +159,39 @@ class BarCache:
             raise CacheError(f"Failed to refresh cache for {symbol}: {exc}") from exc
 
         self._upsert(df, symbol, timeframe)
+
+    def _refresh_batch(
+        self, symbols: list[str], timeframe: str, target_day: date
+    ) -> None:
+        """Batch-fetch full lookback for multiple symbols and upsert."""
+        start, end = self._lookback_range(target_day)
+
+        logger.info(
+            "Batch refreshing cache for %d symbols/%s: %s to %s",
+            len(symbols), timeframe, start, end,
+        )
+        try:
+            batch = self._provider.get_bars_batch(symbols, start, end, timeframe)
+        except Exception as exc:
+            raise CacheError(
+                f"Failed to batch refresh cache for {symbols}: {exc}"
+            ) from exc
+
+        for symbol, df in batch.items():
+            self._upsert(df, symbol, timeframe)
+
+        missing = set(symbols) - set(batch.keys())
+        if missing:
+            logger.warning("Batch refresh returned no data for: %s", missing)
+
+    def _lookback_range(self, target_day: date) -> tuple[date, date]:
+        """Compute the (start, end) date range for a cache refresh."""
+        longest_indicator = self._config.indicators.longest_window
+        # Need lookback_days usable bars + warmup for longest indicator.
+        # ~1.45 calendar days per trading day, with margin.
+        trading_days_needed = self._config.data.lookback_days + longest_indicator
+        start = target_day - timedelta(days=int(trading_days_needed * 1.5))
+        return start, target_day
 
     def _upsert(self, df: pd.DataFrame, symbol: str, timeframe: str) -> None:
         """Upsert bars into market_data_cache using ON CONFLICT DO UPDATE."""
