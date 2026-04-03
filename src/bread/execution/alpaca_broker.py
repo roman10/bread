@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
+from requests.exceptions import ConnectionError, Timeout
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from urllib3.exceptions import ProtocolError
 
 from bread.core.exceptions import ExecutionError, OrderError
 
@@ -19,6 +22,13 @@ if TYPE_CHECKING:
     from bread.core.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+_read_retrier = Retrying(
+    retry=retry_if_exception_type((ConnectionError, Timeout, ProtocolError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    reraise=True,
+)
 
 
 class AlpacaBroker:
@@ -44,14 +54,14 @@ class AlpacaBroker:
     def get_account(self) -> TradeAccount:
         """Fetch account info (equity, buying_power, cash, last_equity)."""
         try:
-            return self._client.get_account()  # type: ignore[return-value]
+            return _read_retrier(self._client.get_account)  # type: ignore[return-value]
         except Exception as exc:
             raise ExecutionError(f"Failed to get account: {exc}") from exc
 
     def get_positions(self) -> list[AlpacaPosition]:
         """Fetch all open positions from Alpaca."""
         try:
-            return self._client.get_all_positions()  # type: ignore[return-value]
+            return _read_retrier(self._client.get_all_positions)  # type: ignore[arg-type]
         except Exception as exc:
             raise ExecutionError(f"Failed to get positions: {exc}") from exc
 
@@ -59,7 +69,9 @@ class AlpacaBroker:
         """Fetch orders by status."""
         try:
             request = GetOrdersRequest(status=QueryOrderStatus(status))
-            return self._client.get_orders(filter=request)  # type: ignore[return-value]
+            return _read_retrier(
+                self._client.get_orders, filter=request  # type: ignore[arg-type]
+            )
         except Exception as exc:
             raise ExecutionError(f"Failed to get orders: {exc}") from exc
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from requests.exceptions import ConnectionError
 
 from bread.core.config import AppConfig
 from bread.core.exceptions import ExecutionError, OrderError
@@ -34,6 +35,22 @@ class TestAlpacaBroker:
 
         assert account.equity == "10000"
         mock_client.get_account.assert_called_once()
+
+    @patch("bread.execution.alpaca_broker._read_retrier.wait", new=lambda *a, **kw: 0)
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_get_account_retries_on_connection_error(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_account = SimpleNamespace(equity="10000", buying_power="8000")
+        mock_client.get_account.side_effect = [ConnectionError("reset"), mock_account]
+
+        broker = AlpacaBroker(config)
+        account = broker.get_account()
+
+        assert account.equity == "10000"
+        assert mock_client.get_account.call_count == 2
 
     @patch("bread.execution.alpaca_broker.TradingClient")
     def test_get_account_error(
