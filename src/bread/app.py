@@ -93,18 +93,25 @@ def tick() -> None:
                 if is_new_buy:
                     pos = positions_after[sig.symbol]
                     _alert_manager.notify_trade(
-                        sig.symbol, "BUY", pos.qty,
-                        pos.entry_price, sig.reason,
+                        sig.symbol,
+                        "BUY",
+                        pos.qty,
+                        pos.entry_price,
+                        sig.reason,
                     )
                 elif is_closed_sell:
                     _alert_manager.notify_trade(
-                        sig.symbol, "SELL", 0,
-                        prices.get(sig.symbol, 0.0), sig.reason,
+                        sig.symbol,
+                        "SELL",
+                        0,
+                        prices.get(sig.symbol, 0.0),
+                        sig.reason,
                     )
 
         logger.info(
             "Tick complete: signals=%d positions=%d",
-            len(all_signals), len(_engine.get_positions()),
+            len(all_signals),
+            len(_engine.get_positions()),
         )
     except Exception:
         logger.exception("Tick failed")
@@ -143,7 +150,12 @@ def _send_daily_summary() -> None:
         losses = len(entries) - wins
 
         _alert_manager.notify_daily_summary(
-            equity, daily_pnl, daily_pct, len(entries), wins, losses,
+            equity,
+            daily_pnl,
+            daily_pct,
+            len(entries),
+            wins,
+            losses,
         )
     except Exception:
         logger.exception("Failed to send daily summary")
@@ -164,8 +176,7 @@ def run(mode: str) -> None:
     # 2. Live mode confirmation — BEFORE any broker interaction
     if _config.mode == "live":
         confirm = input(
-            "WARNING: LIVE TRADING MODE — real money at risk\n"
-            'Type "CONFIRM" to proceed: '
+            'WARNING: LIVE TRADING MODE — real money at risk\nType "CONFIRM" to proceed: '
         )
         if confirm.strip() != "CONFIRM":
             logger.info("Live mode not confirmed, exiting")
@@ -192,8 +203,15 @@ def run(mode: str) -> None:
 
     _strategies = []
     for s in _config.strategies:
+        if not s.enabled:
+            logger.info("Strategy %s disabled, skipping", s.name)
+            continue
+        if _config.mode not in s.modes:
+            logger.info("Strategy %s not enabled for %s mode, skipping", s.name, _config.mode)
+            continue
         cls = get_strategy(s.name)
-        inst = cls(CONFIG_DIR / s.config_path, _config.indicators)  # type: ignore[call-arg]
+        cfg_path = s.config_path or f"strategies/{s.name}.yaml"
+        inst = cls(CONFIG_DIR / cfg_path, _config.indicators)  # type: ignore[call-arg]
         _strategies.append(inst)
 
     logger.info("Loaded %d strategies: %s", len(_strategies), [s.name for s in _strategies])
@@ -220,7 +238,8 @@ def run(mode: str) -> None:
         _send_daily_summary,
         CronTrigger(
             day_of_week="mon-fri",
-            hour=16, minute=5,
+            hour=16,
+            minute=5,
             timezone="America/New_York",
         ),
         id="daily_summary",

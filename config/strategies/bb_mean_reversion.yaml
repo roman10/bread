@@ -1,0 +1,22 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  bollinger_period: 20
+  bollinger_stddev: 2.0
+  rsi_period: 14
+  rsi_entry_threshold: 40
+
+exit:
+  rsi_exit_threshold: 60
+  atr_stop_mult: 2.0
+  time_stop_days: 10

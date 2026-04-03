@@ -82,7 +82,10 @@ class IndicatorSettings(BaseModel):
 
 class StrategySettings(BaseModel):
     name: str  # canonical snake_case identifier
-    config_path: str  # relative to CONFIG_DIR
+    config_path: str | None = None  # relative to CONFIG_DIR; defaults to strategies/{name}.yaml
+    enabled: bool = True
+    modes: list[Literal["paper", "live"]] = ["paper", "live"]
+    weight: float = Field(default=1.0, gt=0, le=1.0)
 
 
 class BacktestSettings(BaseModel):

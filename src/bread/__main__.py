@@ -104,19 +104,20 @@ def backtest_cmd(
         finally:
             engine.dispose()
 
-        # 4. Match strategy name
+        # 4. Match strategy name (skip disabled strategies)
         strat_settings = None
         for s in config.strategies:
-            if s.name == strategy:
+            if s.name == strategy and s.enabled:
                 strat_settings = s
                 break
         if strat_settings is None:
-            available = [s.name for s in config.strategies]
+            available = [s.name for s in config.strategies if s.enabled]
             typer.echo(f"Error: Unknown strategy '{strategy}'. Available: {available}", err=True)
             raise SystemExit(1)
 
         # 5. Resolve config path
-        strategy_config_path = CONFIG_DIR / strat_settings.config_path
+        cfg_path = strat_settings.config_path or f"strategies/{strat_settings.name}.yaml"
+        strategy_config_path = CONFIG_DIR / cfg_path
 
         # 6. Look up strategy class from registry
         import bread.strategy  # noqa: F401
@@ -219,8 +220,7 @@ def status_cmd() -> None:
 
         sign = "+" if daily_pnl >= 0 else ""
         typer.echo(
-            f"Account: equity=${equity:,.2f}  cash=${cash:,.2f}  "
-            f"buying_power=${buying_power:,.2f}"
+            f"Account: equity=${equity:,.2f}  cash=${cash:,.2f}  buying_power=${buying_power:,.2f}"
         )
         typer.echo(
             f"Today: P&L={sign}${daily_pnl:,.2f} ({sign}{daily_pct:.2f}%)  "
@@ -254,19 +254,19 @@ def status_cmd() -> None:
                 f"  Daily loss: ${loss_amt:,.2f} / "
                 f"${daily_limit:,.2f} "
                 f"({loss_amt / daily_limit * 100:.1f}% of limit)"
-                if daily_limit > 0 else f"  Daily loss: ${loss_amt:,.2f}"
+                if daily_limit > 0
+                else f"  Daily loss: ${loss_amt:,.2f}"
             )
 
             dd_limit = config.risk.max_drawdown_pct * 100
             typer.echo(
                 f"  Drawdown: {drawdown_pct:.1f}% / {dd_limit:.1f}% "
                 f"({drawdown_pct / dd_limit * 100:.1f}% of limit)"
-                if dd_limit > 0 else f"  Drawdown: {drawdown_pct:.1f}%"
+                if dd_limit > 0
+                else f"  Drawdown: {drawdown_pct:.1f}%"
             )
 
-            typer.echo(
-                f"  Positions: {len(positions)} / {config.risk.max_positions}"
-            )
+            typer.echo(f"  Positions: {len(positions)} / {config.risk.max_positions}")
         except Exception:
             logger.debug("Failed to display risk status", exc_info=True)
 
@@ -370,8 +370,7 @@ def dashboard_cmd(
         from bread.dashboard.app import create_app
     except ImportError:
         typer.echo(
-            "Dashboard requires extra dependencies.\n"
-            "Install with: pip install bread[dashboard]",
+            "Dashboard requires extra dependencies.\nInstall with: pip install bread[dashboard]",
             err=True,
         )
         raise SystemExit(1)

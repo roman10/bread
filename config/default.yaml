@@ -28,6 +28,8 @@ indicators:
 strategies:
   - name: etf_momentum
     config_path: strategies/etf_momentum.yaml
+  - name: bb_mean_reversion
+    config_path: strategies/bb_mean_reversion.yaml
 
 backtest:
   initial_capital: 10000.0
