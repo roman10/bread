@@ -218,6 +218,13 @@ class TestSectorRotationProperties:
         strat = SectorRotation(strategy_config, indicator_settings)
         assert strat.universe == ["SPY", "QQQ", "XLK"]
 
+    def test_min_history_days(
+        self, strategy_config: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        strat = SectorRotation(strategy_config, indicator_settings)
+        # max(sma_trend=50, atr=14, max_return_period=20)
+        assert strat.min_history_days == 50
+
     def test_time_stop_days(
         self, strategy_config: Path, indicator_settings: IndicatorSettings
     ) -> None:

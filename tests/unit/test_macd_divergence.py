@@ -177,6 +177,17 @@ class TestMacdDivergenceProperties:
         strat = MacdDivergence(strategy_config, indicator_settings)
         assert strat.name == "macd_divergence"
 
+    def test_universe(self, strategy_config: Path, indicator_settings: IndicatorSettings) -> None:
+        strat = MacdDivergence(strategy_config, indicator_settings)
+        assert strat.universe == ["SPY"]
+
+    def test_min_history_days(
+        self, strategy_config: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        strat = MacdDivergence(strategy_config, indicator_settings)
+        # max(divergence_lookback=20, rsi=14, atr=14)
+        assert strat.min_history_days == 20
+
     def test_time_stop_days(
         self, strategy_config: Path, indicator_settings: IndicatorSettings
     ) -> None:

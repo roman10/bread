@@ -223,6 +223,10 @@ class TestGapFadeProperties:
         strat = GapFade(strategy_config, indicator_settings)
         assert strat.name == "gap_fade"
 
+    def test_universe(self, strategy_config: Path, indicator_settings: IndicatorSettings) -> None:
+        strat = GapFade(strategy_config, indicator_settings)
+        assert strat.universe == ["SPY"]
+
     def test_time_stop_days(
         self, strategy_config: Path, indicator_settings: IndicatorSettings
     ) -> None:

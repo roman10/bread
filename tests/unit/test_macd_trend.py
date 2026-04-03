@@ -261,6 +261,13 @@ class TestMacdTrendProperties:
         strat = MacdTrend(strategy_config, indicator_settings)
         assert strat.universe == ["SPY"]
 
+    def test_min_history_days(
+        self, strategy_config: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        strat = MacdTrend(strategy_config, indicator_settings)
+        # max(ema=21, atr=14, vol_sma=20, macd_warmup=26+9=35)
+        assert strat.min_history_days == 35
+
     def test_time_stop_days(
         self, strategy_config: Path, indicator_settings: IndicatorSettings
     ) -> None:

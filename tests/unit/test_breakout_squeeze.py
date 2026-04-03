@@ -233,6 +233,17 @@ class TestBreakoutSqueezeProperties:
         strat = BreakoutSqueeze(strategy_config, indicator_settings)
         assert strat.name == "breakout_squeeze"
 
+    def test_universe(self, strategy_config: Path, indicator_settings: IndicatorSettings) -> None:
+        strat = BreakoutSqueeze(strategy_config, indicator_settings)
+        assert strat.universe == ["SPY"]
+
+    def test_min_history_days(
+        self, strategy_config: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        strat = BreakoutSqueeze(strategy_config, indicator_settings)
+        # max(bollinger=20, squeeze_lookback=10, atr=14, vol_sma=20)
+        assert strat.min_history_days == 20
+
     def test_time_stop_days(
         self, strategy_config: Path, indicator_settings: IndicatorSettings
     ) -> None:

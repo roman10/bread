@@ -84,6 +84,40 @@ class TestComputeIndicators:
         assert len(cols) == 14
 
 
+class TestReturnPeriods:
+    def test_return_columns_present(self) -> None:
+        settings = IndicatorSettings(return_periods=[5, 10, 20])
+        df = _make_ohlcv(250)
+        result = compute_indicators(df, settings)
+        for p in [5, 10, 20]:
+            assert f"return_{p}d" in result.columns
+
+    def test_return_spot_check(self) -> None:
+        settings = IndicatorSettings(return_periods=[5])
+        df = _make_ohlcv(250)
+        result = compute_indicators(df, settings)
+        # 5-day return at last row should match manual pct_change
+        close = df["close"]
+        expected = (close.iloc[-1] / close.iloc[-6]) - 1
+        assert abs(result["return_5d"].iloc[-1] - expected) < 1e-10
+
+    def test_no_return_periods_by_default(self) -> None:
+        settings = IndicatorSettings()
+        df = _make_ohlcv(250)
+        result = compute_indicators(df, settings)
+        assert not any(c.startswith("return_") for c in result.columns)
+
+    def test_return_periods_in_indicator_columns(self) -> None:
+        settings = IndicatorSettings(return_periods=[5, 10])
+        cols = get_indicator_columns(settings)
+        assert "return_5d" in cols
+        assert "return_10d" in cols
+
+    def test_longest_window_includes_return_periods(self) -> None:
+        settings = IndicatorSettings(return_periods=[5, 10, 250])
+        assert settings.longest_window >= 250
+
+
 class TestGetIndicatorColumns:
     def test_dynamic_naming(self) -> None:
         settings = IndicatorSettings(sma_periods=[10, 30], rsi_period=7)

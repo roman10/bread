@@ -7,12 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
-from bread.strategy.base import Strategy
+from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
 logger = logging.getLogger(__name__)
@@ -22,14 +21,7 @@ logger = logging.getLogger(__name__)
 class SectorRotation(Strategy):
     def __init__(self, config_path: Path, indicator_settings: IndicatorSettings) -> None:
         """Load strategy-specific config from YAML."""
-        try:
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f)
-        except Exception as exc:
-            raise StrategyError(f"Failed to load strategy config: {config_path}: {exc}") from exc
-
-        if not isinstance(cfg, dict):
-            raise StrategyError(f"Invalid strategy config format in {config_path}")
+        cfg = load_strategy_config(config_path)
 
         self._universe: list[str] = cfg.get("universe", [])
         entry = cfg.get("entry", {})

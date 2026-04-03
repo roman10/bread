@@ -7,33 +7,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-import yaml
 
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
-from bread.strategy.base import Strategy
+from bread.data.indicators import _fmt_stddev
+from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
 logger = logging.getLogger(__name__)
-
-
-def _fmt_stddev(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
 
 
 @register("macd_divergence")
 class MacdDivergence(Strategy):
     def __init__(self, config_path: Path, indicator_settings: IndicatorSettings) -> None:
         """Load strategy-specific config from YAML."""
-        try:
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f)
-        except Exception as exc:
-            raise StrategyError(f"Failed to load strategy config: {config_path}: {exc}") from exc
-
-        if not isinstance(cfg, dict):
-            raise StrategyError(f"Invalid strategy config format in {config_path}")
+        cfg = load_strategy_config(config_path)
 
         self._universe: list[str] = cfg.get("universe", [])
         entry = cfg.get("entry", {})
@@ -93,27 +82,7 @@ class MacdDivergence(Strategy):
 
     def evaluate(self, universe: dict[str, pd.DataFrame]) -> list[Signal]:
         """Evaluate strategy on enriched DataFrames."""
-        signals: list[Signal] = []
-
-        for symbol in self._universe:
-            if symbol not in universe:
-                continue
-
-            df = universe[symbol]
-            if df.empty:
-                raise StrategyError(f"Empty DataFrame for {symbol}")
-
-            missing = self._required_cols - set(df.columns)
-            if missing:
-                raise StrategyError(
-                    f"Missing indicator columns for {symbol}: {missing}"
-                )
-
-            signal = self._evaluate_symbol(symbol, df)
-            if signal is not None:
-                signals.append(signal)
-
-        return signals
+        return self._evaluate_universe(universe, self._evaluate_symbol)
 
     def _find_swing_lows(self, series: pd.Series, window: int) -> list[int]:
         """Find indices of swing lows in a series.
