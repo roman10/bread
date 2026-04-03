@@ -290,3 +290,85 @@ class TestDashboardDataLive:
         assert len(orders) == 1
         assert orders[0]["symbol"] == "QQQ"
         assert orders[0]["side"] == "BUY"
+
+
+class TestBotActivity:
+    """Test get_bot_activity handles naive/aware datetimes from SQLite."""
+
+    def _make_data(self, sf, engine):
+        from bread.dashboard.data import DashboardData
+
+        config = _make_config()
+        with patch("bread.dashboard.data.AlpacaBroker", side_effect=Exception("no keys")), \
+             patch("bread.dashboard.data.get_engine", return_value=engine), \
+             patch("bread.dashboard.data.init_db"), \
+             patch("bread.dashboard.data.get_session_factory", return_value=sf):
+            return DashboardData(config)
+
+    def test_no_data(self):
+        engine, sf = _make_sf()
+        data = self._make_data(sf, engine)
+
+        activity = data.get_bot_activity()
+        assert activity["status"] == "No Data"
+        assert activity["last_tick"] is None
+        assert activity["ticks_today"] == 0
+
+    def test_naive_datetime_from_sqlite(self):
+        """Regression: SQLite returns naive datetimes — must not crash."""
+        engine, sf = _make_sf()
+        # Insert a snapshot with a NAIVE datetime (no tzinfo), as SQLite returns
+        naive_ts = datetime(2026, 4, 3, 13, 50, 0)  # no tzinfo
+        _snap(sf, naive_ts, 10_000.0)
+
+        data = self._make_data(sf, engine)
+        # This used to raise: TypeError: can't subtract offset-naive and offset-aware datetimes
+        activity = data.get_bot_activity()
+        assert activity["last_tick"] is not None
+        assert activity["last_tick"].tzinfo is not None  # must be made aware
+
+    def test_aware_datetime_from_sqlite(self):
+        """Aware datetimes should pass through without issue."""
+        engine, sf = _make_sf()
+        aware_ts = datetime(2026, 4, 3, 13, 50, 0, tzinfo=UTC)
+        _snap(sf, aware_ts, 10_000.0)
+
+        data = self._make_data(sf, engine)
+        activity = data.get_bot_activity()
+        assert activity["last_tick"] is not None
+        assert activity["last_tick"].tzinfo is not None
+
+    @patch("bread.dashboard.data.is_market_open", return_value=True)
+    def test_recent_tick_shows_running(self, _mock_market):
+        """A tick within 20 minutes during market hours → Running."""
+        engine, sf = _make_sf()
+        recent_ts = datetime.now(UTC) - timedelta(minutes=5)
+        _snap(sf, recent_ts, 10_000.0)
+
+        data = self._make_data(sf, engine)
+        activity = data.get_bot_activity()
+        assert activity["status"] == "Running"
+        assert activity["status_color"] == "success"
+
+    @patch("bread.dashboard.data.is_market_open", return_value=True)
+    def test_old_tick_shows_stale(self, _mock_market):
+        """A tick older than 20 minutes during market hours → Stale."""
+        engine, sf = _make_sf()
+        old_ts = datetime.now(UTC) - timedelta(minutes=30)
+        _snap(sf, old_ts, 10_000.0)
+
+        data = self._make_data(sf, engine)
+        activity = data.get_bot_activity()
+        assert activity["status"] == "Stale"
+        assert activity["status_color"] == "danger"
+
+    @patch("bread.dashboard.data.is_market_open", return_value=False)
+    def test_outside_market_shows_idle(self, _mock_market):
+        """Any tick outside market hours → Idle."""
+        engine, sf = _make_sf()
+        _snap(sf, datetime.now(UTC) - timedelta(minutes=5), 10_000.0)
+
+        data = self._make_data(sf, engine)
+        activity = data.get_bot_activity()
+        assert activity["status"] == "Idle"
+        assert activity["status_color"] == "warning"
