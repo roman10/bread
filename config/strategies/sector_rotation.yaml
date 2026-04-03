@@ -1,0 +1,27 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  top_n: 3
+  sma_trend: 50
+  return_weights:
+    - period: 20
+      weight: 0.5
+    - period: 10
+      weight: 0.3
+    - period: 5
+      weight: 0.2
+
+exit:
+  exit_rank: 5
+  atr_stop_mult: 2.0
+  time_stop_days: 20

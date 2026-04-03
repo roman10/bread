@@ -24,12 +24,27 @@ indicators:
   bollinger_period: 20
   bollinger_stddev: 2.0
   volume_sma_period: 20
+  return_periods: [5, 10, 20]
 
 strategies:
   - name: etf_momentum
     config_path: strategies/etf_momentum.yaml
   - name: bb_mean_reversion
     config_path: strategies/bb_mean_reversion.yaml
+  - name: macd_trend
+    config_path: strategies/macd_trend.yaml
+  - name: ema_crossover
+    config_path: strategies/ema_crossover.yaml
+  - name: sector_rotation
+    config_path: strategies/sector_rotation.yaml
+  - name: risk_off_rotation
+    config_path: strategies/risk_off_rotation.yaml
+  - name: breakout_squeeze
+    config_path: strategies/breakout_squeeze.yaml
+  - name: macd_divergence
+    config_path: strategies/macd_divergence.yaml
+  - name: gap_fade
+    config_path: strategies/gap_fade.yaml
 
 backtest:
   initial_capital: 10000.0

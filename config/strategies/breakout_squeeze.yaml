@@ -1,0 +1,23 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  bollinger_period: 20
+  bollinger_stddev: 2.0
+  squeeze_lookback: 50
+  squeeze_percentile: 20.0
+  volume_sma_period: 20
+  volume_mult: 1.2
+
+exit:
+  atr_stop_mult: 1.5
+  time_stop_days: 10

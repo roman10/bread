@@ -1,0 +1,22 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  gap_threshold: 0.015
+  rsi_period: 14
+  rsi_entry_max: 40
+  sma_trend: 200
+
+exit:
+  rsi_exit: 60
+  atr_stop_mult: 2.5
+  time_stop_days: 7

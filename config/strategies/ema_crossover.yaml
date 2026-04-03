@@ -1,0 +1,25 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  ema_fast: 9
+  ema_slow: 21
+  sma_trend: 200
+  max_atr_pct: 0.03
+  rsi_period: 14
+  rsi_min: 40
+  rsi_max: 65
+
+exit:
+  rsi_exit: 75
+  atr_stop_mult: 1.5
+  time_stop_days: 8

@@ -81,6 +81,10 @@ def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.Data
         result["volume"].astype(float), length=settings.volume_sma_period
     )
 
+    # Return periods (percentage change over N days)
+    for period in settings.return_periods:
+        result[f"return_{period}d"] = result["close"].pct_change(period)
+
     # Determine indicator columns (everything except original OHLCV)
     ohlcv = {"open", "high", "low", "close", "volume"}
     indicator_cols = [c for c in result.columns if c not in ohlcv]
@@ -118,4 +122,6 @@ def get_indicator_columns(settings: IndicatorSettings) -> list[str]:
     bp = settings.bollinger_period
     cols.extend([f"bb_lower_{bp}_{sdv}", f"bb_mid_{bp}_{sdv}", f"bb_upper_{bp}_{sdv}"])
     cols.append(f"volume_sma_{settings.volume_sma_period}")
+    for p in settings.return_periods:
+        cols.append(f"return_{p}d")
     return cols

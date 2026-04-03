@@ -1,0 +1,22 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  divergence_lookback: 20
+  rsi_period: 14
+  rsi_entry_max: 45
+  swing_low_window: 3
+
+exit:
+  rsi_exit: 65
+  atr_stop_mult: 2.0
+  time_stop_days: 12

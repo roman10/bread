@@ -65,11 +65,12 @@ class IndicatorSettings(BaseModel):
     bollinger_period: int = 20
     bollinger_stddev: float = 2.0
     volume_sma_period: int = 20
+    return_periods: list[int] = Field(default_factory=list)
 
     @property
     def longest_window(self) -> int:
         """Longest lookback window across all indicator configurations."""
-        return max(
+        candidates = [
             max(self.sma_periods),
             max(self.ema_periods),
             self.rsi_period,
@@ -77,7 +78,10 @@ class IndicatorSettings(BaseModel):
             self.atr_period,
             self.bollinger_period,
             self.volume_sma_period,
-        )
+        ]
+        if self.return_periods:
+            candidates.append(max(self.return_periods))
+        return max(candidates)
 
 
 class StrategySettings(BaseModel):

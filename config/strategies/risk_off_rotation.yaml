@@ -1,0 +1,24 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  regime_symbol: SPY
+  safe_haven_symbol: TLT
+  regime_return_period: 20
+  momentum_return_period: 10
+  sma_trend: 50
+  risk_on_symbols: [SPY, QQQ, IWM, DIA, XLF, XLK, XLE, XLV]
+  risk_off_symbols: [TLT, GLD]
+
+exit:
+  atr_stop_mult: 2.0
+  time_stop_days: 20

@@ -1,0 +1,21 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  ema_trend_filter: 21
+  volume_sma_period: 20
+  volume_mult: 1.0
+  require_macd_above_signal: true
+
+exit:
+  atr_stop_mult: 1.5
+  time_stop_days: 12
