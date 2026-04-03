@@ -115,7 +115,8 @@ class ExecutionEngine:
 
                     order.status = new_status
                     if new_status == "FILLED":
-                        order.filled_price = float(broker_order.filled_avg_price or 0)
+                        if broker_order.filled_avg_price is not None:
+                            order.filled_price = float(broker_order.filled_avg_price)
                         order.filled_at_utc = broker_order.filled_at
                         logger.info(
                             "Order %s filled: %s %s @ %.2f",

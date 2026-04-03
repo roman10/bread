@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import typer
@@ -13,6 +14,8 @@ from bread.data.alpaca_data import AlpacaDataProvider
 from bread.data.cache import BarCache
 from bread.data.indicators import compute_indicators, get_indicator_columns
 from bread.db.database import get_engine, get_session_factory, init_db, resolve_db_path
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="bread", add_completion=False)
 db_app = typer.Typer(name="db", help="Database commands")
@@ -265,7 +268,7 @@ def status_cmd() -> None:
                 f"  Positions: {len(positions)} / {config.risk.max_positions}"
             )
         except Exception:
-            pass  # Risk status is best-effort
+            logger.debug("Failed to display risk status", exc_info=True)
 
         # Open orders
         try:
@@ -281,7 +284,7 @@ def status_cmd() -> None:
             else:
                 typer.echo("\nNo open orders")
         except Exception:
-            pass  # Open orders is best-effort
+            logger.debug("Failed to display open orders", exc_info=True)
 
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)

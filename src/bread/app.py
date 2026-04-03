@@ -73,15 +73,34 @@ def tick() -> None:
                 logger.exception("Strategy %s evaluation failed", strategy.name)
 
         # 5. Execute signals
+        positions_before = {p.symbol for p in _engine.get_positions()}
         _engine.process_signals(all_signals, prices)
+        positions_after = {p.symbol: p for p in _engine.get_positions()}
 
-        # 6. Alert on signals
+        # 6. Alert on executed trades (after execution, with actual qty/price)
         if _alert_manager and all_signals:
             for sig in all_signals:
-                _alert_manager.notify_trade(
-                    sig.symbol, sig.direction, 0,
-                    prices.get(sig.symbol, 0.0), sig.reason,
+                is_new_buy = (
+                    sig.direction == "BUY"
+                    and sig.symbol in positions_after
+                    and sig.symbol not in positions_before
                 )
+                is_closed_sell = (
+                    sig.direction == "SELL"
+                    and sig.symbol in positions_before
+                    and sig.symbol not in positions_after
+                )
+                if is_new_buy:
+                    pos = positions_after[sig.symbol]
+                    _alert_manager.notify_trade(
+                        sig.symbol, "BUY", pos.qty,
+                        pos.entry_price, sig.reason,
+                    )
+                elif is_closed_sell:
+                    _alert_manager.notify_trade(
+                        sig.symbol, "SELL", 0,
+                        prices.get(sig.symbol, 0.0), sig.reason,
+                    )
 
         logger.info(
             "Tick complete: signals=%d positions=%d",
