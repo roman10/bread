@@ -91,6 +91,33 @@ class BacktestSettings(BaseModel):
     slippage_pct: float = Field(default=0.001, ge=0)
 
 
+class RiskSettings(BaseModel):
+    risk_pct_per_trade: float = Field(default=0.005, gt=0, le=0.05)
+    max_positions: int = Field(default=5, ge=1)
+    max_position_pct: float = Field(default=0.20, gt=0, le=1.0)
+    max_asset_class_pct: float = Field(default=0.40, gt=0, le=1.0)
+    max_daily_loss_pct: float = Field(default=0.015, gt=0, le=1.0)
+    max_weekly_loss_pct: float = Field(default=0.03, gt=0, le=1.0)
+    max_drawdown_pct: float = Field(default=0.07, gt=0, le=1.0)
+    pdt_enabled: bool = True
+    asset_classes: dict[str, list[str]] = Field(
+        default_factory=lambda: {
+            "equity_broad": ["SPY", "QQQ", "IWM", "DIA"],
+            "financials": ["XLF"],
+            "technology": ["XLK"],
+            "energy": ["XLE"],
+            "healthcare": ["XLV"],
+            "commodities": ["GLD"],
+            "fixed_income": ["TLT"],
+        }
+    )
+
+
+class ExecutionSettings(BaseModel):
+    tick_interval_minutes: int = Field(default=15, ge=1)
+    take_profit_ratio: float = Field(default=2.0, gt=0)
+
+
 class AppConfig(BaseModel):
     mode: Literal["paper", "live"]
     app: AppSettings = AppSettings()
@@ -100,6 +127,8 @@ class AppConfig(BaseModel):
     indicators: IndicatorSettings = IndicatorSettings()
     strategies: list[StrategySettings] = Field(default_factory=list)
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
+    risk: RiskSettings = Field(default_factory=RiskSettings)
+    execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
 
     @model_validator(mode="after")
     def _check_credentials(self) -> AppConfig:

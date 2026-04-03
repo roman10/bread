@@ -47,3 +47,15 @@ class StrategyError(BreadError):
 
 class BacktestError(BreadError):
     """Backtest engine error."""
+
+
+class ExecutionError(BreadError):
+    """Execution engine error."""
+
+
+class RiskError(BreadError):
+    """Risk management error."""
+
+
+class OrderError(ExecutionError):
+    """Order submission or tracking error."""

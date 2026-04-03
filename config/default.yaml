@@ -33,3 +33,25 @@ backtest:
   initial_capital: 10000.0
   commission_per_trade: 0.0
   slippage_pct: 0.001
+
+risk:
+  risk_pct_per_trade: 0.005
+  max_positions: 5
+  max_position_pct: 0.20
+  max_asset_class_pct: 0.40
+  max_daily_loss_pct: 0.015
+  max_weekly_loss_pct: 0.03
+  max_drawdown_pct: 0.07
+  pdt_enabled: true
+  asset_classes:
+    equity_broad: [SPY, QQQ, IWM, DIA]
+    financials: [XLF]
+    technology: [XLK]
+    energy: [XLE]
+    healthcare: [XLV]
+    commodities: [GLD]
+    fixed_income: [TLT]
+
+execution:
+  tick_interval_minutes: 15
+  take_profit_ratio: 2.0

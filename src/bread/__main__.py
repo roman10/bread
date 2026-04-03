@@ -158,5 +158,94 @@ def backtest_cmd(
         raise SystemExit(1) from exc
 
 
+@app.command("run")
+def run_cmd(
+    mode: str = typer.Option("paper", "--mode", help="Trading mode: paper or live"),
+) -> None:
+    """Start the trading bot."""
+    if mode not in ("paper", "live"):
+        typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
+        raise SystemExit(1)
+    try:
+        from bread.app import run
+
+        run(mode)
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+@app.command("status")
+def status_cmd() -> None:
+    """Show account and position status."""
+    try:
+        config = load_config()
+        setup_logging(config.app.log_level)
+
+        from bread.execution.alpaca_broker import AlpacaBroker
+
+        broker = AlpacaBroker(config)
+        account = broker.get_account()
+        positions = broker.get_positions()
+
+        equity = float(account.equity or 0)
+        cash = float(account.cash or 0)
+        buying_power = float(account.buying_power or 0)
+        last_equity = float(account.last_equity or equity)
+        daily_pnl = equity - last_equity
+        daily_pct = (daily_pnl / last_equity * 100) if last_equity > 0 else 0.0
+
+        # Peak equity from DB
+        from sqlalchemy import func, select
+
+        from bread.db.models import PortfolioSnapshot
+
+        engine_db = get_engine(config.db.path)
+        init_db(engine_db)
+        try:
+            sf = get_session_factory(engine_db)
+            with sf() as session:
+                peak = session.execute(
+                    select(func.max(PortfolioSnapshot.equity))
+                ).scalar_one_or_none()
+        finally:
+            engine_db.dispose()
+
+        peak = peak or equity
+        drawdown_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
+
+        sign = "+" if daily_pnl >= 0 else ""
+        typer.echo(
+            f"Account: equity=${equity:,.2f}  cash=${cash:,.2f}  "
+            f"buying_power=${buying_power:,.2f}"
+        )
+        typer.echo(
+            f"Today: P&L={sign}${daily_pnl:,.2f} ({sign}{daily_pct:.2f}%)  "
+            f"Drawdown from peak: {drawdown_pct:.1f}%"
+        )
+
+        if positions:
+            typer.echo(f"\nOpen Positions ({len(positions)}):")
+            for pos in positions:
+                sym = pos.symbol
+                qty = int(float(pos.qty or 0))
+                entry = float(pos.avg_entry_price or 0)
+                current = float(pos.current_price or 0)
+                unrealized = float(pos.unrealized_pl or 0)
+                pct = float(pos.unrealized_plpc or 0) * 100
+                sign_p = "+" if unrealized >= 0 else ""
+                typer.echo(
+                    f"  {sym:<5} qty={qty}  entry=${entry:,.2f}  "
+                    f"current=${current:,.2f}  P&L={sign_p}${unrealized:,.2f} "
+                    f"({sign_p}{pct:.1f}%)"
+                )
+        else:
+            typer.echo("\nNo open positions")
+
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
 if __name__ == "__main__":
     app()

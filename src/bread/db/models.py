@@ -52,3 +52,41 @@ class SignalLog(Base):
     __table_args__ = (
         Index("ix_signals_strategy_symbol", "strategy_name", "symbol"),
     )
+
+
+class OrderLog(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    side: Mapped[str] = mapped_column(String, nullable=False)
+    qty: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    stop_loss_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    filled_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    strategy_name: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    filled_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_orders_symbol_status", "symbol", "status"),
+    )
+
+
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
+    cash: Mapped[float] = mapped_column(Float, nullable=False)
+    positions_value: Mapped[float] = mapped_column(Float, nullable=False)
+    open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
+    daily_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_snapshots_ts", "timestamp_utc"),
+    )

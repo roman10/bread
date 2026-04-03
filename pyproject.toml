@@ -18,6 +18,7 @@ dependencies = [
     "typer>=0.9",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    "apscheduler>=3.10",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +52,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pandas_ta", "alpaca.*", "pandas_ta.*"]
+module = ["pandas_ta", "alpaca.*", "pandas_ta.*", "apscheduler.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

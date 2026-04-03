@@ -1,9 +1,9 @@
-"""Domain models for strategy output."""
+"""Domain models for strategy output and execution."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from enum import StrEnum
 
 
@@ -27,3 +27,44 @@ class Signal:
             raise ValueError(f"strength must be in [0.0, 1.0], got {self.strength}")
         if self.stop_loss_pct <= 0:
             raise ValueError(f"stop_loss_pct must be > 0, got {self.stop_loss_pct}")
+
+
+class OrderStatus(StrEnum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+
+
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+@dataclass
+class Order:
+    symbol: str
+    side: OrderSide
+    qty: int
+    status: OrderStatus
+    broker_order_id: str | None = None
+    stop_loss_price: float | None = None
+    take_profit_price: float | None = None
+    filled_price: float | None = None
+    strategy_name: str = ""
+    reason: str = ""
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    filled_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Position:
+    symbol: str
+    qty: int
+    entry_price: float
+    stop_loss_price: float
+    take_profit_price: float
+    broker_order_id: str
+    strategy_name: str
+    entry_date: date
