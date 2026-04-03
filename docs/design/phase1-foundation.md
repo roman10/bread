@@ -12,11 +12,11 @@ Set up project scaffolding, configuration, database, data pipeline, and technica
 
 Scope was trimmed to only what Phase 1 functionally needs. Deferred to their owning phases:
 
-- **Domain models** (Signal, Order, Position, PortfolioSnapshot) → Phase 2
-- **Event bus** → Phase 2
-- **Skeleton tables** (signals_log, orders, trades, portfolio_snapshots) → Phase 2-4
-- **`get_latest_bar()`** → Phase 2
-- **Finnhub placeholder** → Phase 2
+- **Domain models** (Signal, Order, Position, PortfolioSnapshot) → Phase 2 (Signal and SignalDirection implemented; Order, Position, PortfolioSnapshot deferred to Phase 3+)
+- **Event bus** → Phase 3
+- **Skeleton tables** (signals_log, orders, trades, portfolio_snapshots) → Phase 2-4 (signals_log table created in Phase 2; others deferred)
+- **`get_latest_bar()`** → Phase 3
+- **Finnhub placeholder** → Phase 3
 
 The contracts below are the implementation source of truth for Phase 1.
 
@@ -146,7 +146,7 @@ class AppConfig(BaseModel):
 
 ### 1.3 Exceptions (`core/exceptions.py`)
 
-> **Note:** Domain models (`core/models.py`) and event bus (`core/events.py`) from the parent design are deferred to Phase 2, where the consuming code (strategies, execution) will define their actual shape.
+> **Note:** Domain models (`core/models.py`) were implemented in Phase 2 (`Signal`, `SignalDirection`). Event bus (`core/events.py`) is deferred to Phase 3.
 
 Define an explicit exception hierarchy:
 
@@ -223,7 +223,7 @@ class DataProvider(ABC):
     ) -> pd.DataFrame: ...
 ```
 
-`get_latest_bar()` is deferred to Phase 2 when strategies need intra-day prices.
+`get_latest_bar()` is deferred to Phase 3 when live/paper trading needs intra-day prices.
 
 DataFrame contract for `get_bars()`:
 

@@ -52,7 +52,8 @@ bread/
 │   ├── backtest/
 │   │   ├── engine.py             # Historical replay
 │   │   ├── data_feed.py          # Historical data feed
-│   │   └── metrics.py            # Sharpe, drawdown, etc.
+│   │   ├── metrics.py            # Sharpe, drawdown, etc.
+│   │   └── models.py             # Trade, BacktestResult dataclasses
 │   ├── monitoring/
 │   │   ├── tracker.py            # P&L tracking
 │   │   ├── journal.py            # Trade journal
@@ -388,7 +389,7 @@ Not needed initially (single-user, localhost). Future option: `dash-auth` basic 
 | Phase | Status | Deliverable |
 |-------|--------|-------------|
 | 1. Foundation | **Complete** | Scaffolding, config, database, data pipeline, indicators |
-| 2. Strategy + Backtest | Pending | Strategy framework, ETF momentum, backtest engine |
+| 2. Strategy + Backtest | **Complete** | Strategy framework, ETF momentum, backtest engine |
 | 3. Execution + Paper | Pending | Execution engine, orchestrator, paper trading |
 | 4. Monitoring | Pending | Trade journal, P&L tracker, alerts |
 | 5. Dashboard (UI) | Pending | Dash-based web dashboard |
@@ -412,9 +413,39 @@ Completed modules:
 Deferred from Phase 1 to their owning phases:
 - Domain models (`Signal`, `Order`, `Position`, `PortfolioSnapshot`) → Phase 2
 - Event bus (`core/events.py`) → Phase 3
-- Finnhub data provider → Phase 2
+- Finnhub data provider → Phase 3
 - `get_latest_bar()` on DataProvider → Phase 3
 - Additional DB tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) → Phase 2-4
+
+### Phase 2 Implementation Notes
+
+Completed modules:
+- `core/models.py` — `SignalDirection` (StrEnum), `Signal` (frozen dataclass with `__post_init__` validation)
+- `core/config.py` additions — `StrategySettings`, `BacktestSettings`, `AppConfig.strategies`/`backtest` fields, `_unique_strategy_names` validator, `CONFIG_DIR` export
+- `core/exceptions.py` additions — `StrategyError`, `BacktestError`
+- `strategy/base.py` — Abstract `Strategy` interface with `evaluate()`, `name`, `universe`, `min_history_days`, `time_stop_days`
+- `strategy/registry.py` — `@register()` decorator, `get_strategy()`, `list_strategies()`
+- `strategy/etf_momentum.py` — ETF Momentum strategy with entry/exit conditions, indicator validation, ATR-based stop loss
+- `backtest/models.py` — `Trade` and `BacktestResult` dataclasses (extracted from engine for shared use by metrics and tests)
+- `backtest/data_feed.py` — `HistoricalDataFeed` with indicator warmup, per-symbol error handling
+- `backtest/engine.py` — `BacktestEngine` with position tracking, stop loss/time stop exits, slippage, commission, force-close at end
+- `backtest/metrics.py` — `compute_metrics()` for Sharpe, Sortino, CAGR, drawdown, win rate, profit factor
+- `db/models.py` additions — `SignalLog` table (created but signal persistence deferred)
+- `__main__.py` additions — `bread backtest` CLI command
+- `config/strategies/etf_momentum.yaml` — Strategy-specific parameters
+- `config/default.yaml` additions — `strategies` and `backtest` sections
+
+Structural decisions:
+- `Trade`/`BacktestResult` in `backtest/models.py` (not in `engine.py`) to avoid circular imports between engine and metrics
+- `SignalDirection` uses `StrEnum` (not `str, Enum`) for cleaner serialization
+- Signal validation (`strength`, `stop_loss_pct`) in `__post_init__` rather than Pydantic
+- Finnhub earnings check deferred to Phase 3 (replaced with no-op in Phase 2)
+
+Deferred from Phase 2 to Phase 3:
+- Signal persistence to `signals_log` table (table created, writes not implemented)
+- Dynamic position sizing (fixed 1/5 capital per position in Phase 2)
+- Trailing stops (static stop loss only)
+- Finnhub earnings calendar check (no-op in Phase 2)
 
 ---
 

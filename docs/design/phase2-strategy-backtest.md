@@ -8,7 +8,7 @@ Build the strategy framework, implement the first strategy (ETF Momentum), and c
 
 ## Implementation Readiness
 
-**Status:** Ready for implementation.
+**Status:** Complete.
 
 Scope has been trimmed to only what Phase 2 functionally needs. Deferred to their owning phases:
 
@@ -31,10 +31,10 @@ Define dataclasses for strategy output. These were deferred from Phase 1.
 ```python
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 
 
-class SignalDirection(str, Enum):
+class SignalDirection(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
 
@@ -43,16 +43,22 @@ class SignalDirection(str, Enum):
 class Signal:
     symbol: str
     direction: SignalDirection
-    strength: float          # 0.0 to 1.0
-    stop_loss_pct: float     # e.g. 0.05 for 5%
+    strength: float  # 0.0 to 1.0
+    stop_loss_pct: float  # e.g. 0.05 for 5%
     strategy_name: str
-    reason: str              # human-readable explanation
-    timestamp: datetime      # when the signal was generated
+    reason: str  # human-readable explanation
+    timestamp: datetime  # when the signal was generated
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.strength <= 1.0:
+            raise ValueError(f"strength must be in [0.0, 1.0], got {self.strength}")
+        if self.stop_loss_pct <= 0:
+            raise ValueError(f"stop_loss_pct must be > 0, got {self.stop_loss_pct}")
 ```
 
 Rules:
-- `strength` must be in `[0.0, 1.0]`. Values outside this range are a bug in the strategy.
-- `stop_loss_pct` is always positive, representing percentage distance from entry price.
+- `strength` must be in `[0.0, 1.0]`. Enforced by `__post_init__` validation.
+- `stop_loss_pct` must be strictly positive. Enforced by `__post_init__` validation.
 - `reason` is a short string explaining which conditions triggered (for trade journal / debugging).
 - `frozen=True` — signals are immutable once created.
 - Additional models (`Order`, `Position`, `PortfolioSnapshot`) are deferred to Phase 3 where the consuming code exists.
@@ -147,8 +153,9 @@ Strategy YAML files are loaded on demand by the strategy implementation, not by 
 Phase 2 exports the config directory path for strategy config resolution:
 
 ```python
-# Add to core/config.py (rename existing _CONFIG_DIR)
-CONFIG_DIR: Path = Path(__file__).resolve().parents[3] / "config"
+# core/config.py
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+CONFIG_DIR: Path = _PROJECT_ROOT / "config"
 ```
 
 Rules:
@@ -376,9 +383,18 @@ Rules:
 - Returned symbols may be a strict subset of the requested `symbols` list.
 - Does **not** use `BarCache`. Backtesting calls the provider directly for the exact date range needed, avoiding the cache's `lookback_days`-relative fetch logic which cannot cover arbitrary historical ranges.
 
-#### Backtest engine (`backtest/engine.py`)
+#### Backtest models (`backtest/models.py`)
+
+`Trade` and `BacktestResult` are defined in a separate models module, imported by both the engine and metrics.
 
 ```python
+from dataclasses import dataclass, field
+from datetime import date
+
+import pandas as pd
+from bread.core.models import SignalDirection
+
+
 @dataclass
 class Trade:
     symbol: str
@@ -391,6 +407,8 @@ class Trade:
     stop_loss_price: float | None = None
     pnl: float = 0.0
     exit_reason: str = ""
+    _trading_days_held: int = field(default=0, repr=False)
+
 
 @dataclass
 class BacktestResult:
@@ -399,7 +417,11 @@ class BacktestResult:
     metrics: dict[str, float | int]   # output of compute_metrics()
     initial_capital: float
     final_equity: float
+```
 
+#### Backtest engine (`backtest/engine.py`)
+
+```python
 class BacktestEngine:
     def __init__(
         self,
@@ -561,16 +583,18 @@ Behavior:
 ```
 Backtest: etf_momentum | 2024-01-01 to 2025-12-31
 ---
-Total return:     12.34%
-CAGR:              6.21%
-Sharpe ratio:      0.85
-Sortino ratio:     1.12
-Max drawdown:      5.67%
-Win rate:         58.33%
-Profit factor:     1.45
-Total trades:        24
-Avg holding days:  8.50
+Total return:       12.34%
+CAGR:                6.21%
+Sharpe ratio:        0.85
+Sortino ratio:       1.12
+Max drawdown:        5.67%
+Win rate:           58.33%
+Profit factor:       1.45
+Total trades:          24
+Avg holding days:    8.50
 ```
+
+Each label is a fixed 17-char prefix, followed by the value in a right-aligned 8-char field (`>8.2f` for floats, `>8d` for integers).
 
 Rules:
 - Percentages formatted to 2 decimal places, right-aligned.
