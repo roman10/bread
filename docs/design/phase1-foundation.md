@@ -10,13 +10,13 @@ Set up project scaffolding, configuration, database, data pipeline, and technica
 
 **Status:** Complete.
 
-Scope was trimmed to only what Phase 1 functionally needs. Deferred to their owning phases:
+Scope was trimmed to only what Phase 1 functionally needs. Deferred items and their resolution:
 
-- **Domain models** (Signal, Order, Position, PortfolioSnapshot) → Phase 2 (Signal and SignalDirection implemented; Order, Position, PortfolioSnapshot deferred to Phase 3+)
-- **Event bus** → Phase 3
-- **Skeleton tables** (signals_log, orders, trades, portfolio_snapshots) → Phase 2-4 (signals_log table created in Phase 2; others deferred)
-- **`get_latest_bar()`** → Phase 3
-- **Finnhub placeholder** → Phase 3
+- **Domain models** (Signal, Order, Position, PortfolioSnapshot) → **Done.** Signal/SignalDirection in Phase 2; OrderStatus, OrderSide, Position in Phase 3. `Order` dataclass dropped (OrderLog DB model used instead).
+- **Event bus** → **Dropped.** Direct method calls sufficient for single-threaded architecture.
+- **Skeleton tables** (signals_log, orders, trades, portfolio_snapshots) → **Done.** SignalLog in Phase 2; OrderLog, PortfolioSnapshot in Phase 3. `trades` table not needed (history derivable from orders).
+- **`get_latest_bar()`** → **Not needed.** Tick cycle uses BarCache for daily bars.
+- **Finnhub placeholder** → Still deferred to future phase.
 
 The contracts below are the implementation source of truth for Phase 1.
 
@@ -146,7 +146,7 @@ class AppConfig(BaseModel):
 
 ### 1.3 Exceptions (`core/exceptions.py`)
 
-> **Note:** Domain models (`core/models.py`) were implemented in Phase 2 (`Signal`, `SignalDirection`). Event bus (`core/events.py`) is deferred to Phase 3.
+> **Note:** Domain models (`core/models.py`) were implemented across Phase 2 (`Signal`, `SignalDirection`) and Phase 3 (`OrderStatus`, `OrderSide`, `Position`). Event bus (`core/events.py`) was dropped — not needed.
 
 Define an explicit exception hierarchy:
 
@@ -199,7 +199,7 @@ Constraints:
 - Unique constraint on `(symbol, timeframe, timestamp_utc)`
 - Index on `(symbol, timeframe, timestamp_utc)`
 
-Additional tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) are deferred to their owning phases (Phase 2-4). Their schemas will be designed when the consuming code is built, avoiding stale DDL.
+Additional tables were implemented in their owning phases: `signals_log` in Phase 2, `OrderLog` and `PortfolioSnapshot` in Phase 3. A separate `trades` table was not needed (trade history is derivable from orders).
 
 Required modules:
 

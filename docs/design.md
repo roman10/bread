@@ -390,7 +390,7 @@ Not needed initially (single-user, localhost). Future option: `dash-auth` basic 
 |-------|--------|-------------|
 | 1. Foundation | **Complete** | Scaffolding, config, database, data pipeline, indicators |
 | 2. Strategy + Backtest | **Complete** | Strategy framework, ETF momentum, backtest engine |
-| 3. Execution + Paper | Pending | Execution engine, orchestrator, paper trading |
+| 3. Execution + Paper | **Complete** | Execution engine, risk management, orchestrator, paper trading |
 | 4. Monitoring | Pending | Trade journal, P&L tracker, alerts |
 | 5. Dashboard (UI) | Pending | Dash-based web dashboard |
 | 6. Validation | Pending | 2-4 weeks paper trading, tuning |
@@ -411,11 +411,11 @@ Completed modules:
 - `__main__.py` — Typer CLI with `bread db init` and `bread fetch <SYMBOL>`
 
 Deferred from Phase 1 to their owning phases:
-- Domain models (`Signal`, `Order`, `Position`, `PortfolioSnapshot`) → Phase 2
-- Event bus (`core/events.py`) → Phase 3
-- Finnhub data provider → Phase 3
-- `get_latest_bar()` on DataProvider → Phase 3
-- Additional DB tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) → Phase 2-4
+- Domain models (`Signal`, `Order`, `Position`, `PortfolioSnapshot`) → **Done** (Phase 2-3; `Order` dataclass dropped in favor of `OrderLog` DB model)
+- Event bus (`core/events.py`) → Dropped (direct method calls sufficient for single-threaded architecture)
+- Finnhub data provider → Deferred to future phase
+- `get_latest_bar()` on DataProvider → Not needed (tick uses BarCache)
+- Additional DB tables (`signals_log`, `orders`, `trades`, `portfolio_snapshots`) → **Done** (Phase 2-3; `SignalLog`, `OrderLog`, `PortfolioSnapshot` tables created; `trades` table not needed — trade history derivable from orders)
 
 ### Phase 2 Implementation Notes
 
@@ -446,6 +446,40 @@ Deferred from Phase 2 to Phase 3:
 - Dynamic position sizing (fixed 1/5 capital per position in Phase 2)
 - Trailing stops (static stop loss only)
 - Finnhub earnings calendar check (no-op in Phase 2)
+
+### Phase 3 Implementation Notes
+
+Completed modules:
+- `core/config.py` additions — `RiskSettings` (risk_pct_per_trade, max_positions, max_position_pct, asset class exposure, loss limits, PDT), `ExecutionSettings` (tick_interval_minutes, take_profit_ratio), added to `AppConfig`
+- `core/exceptions.py` additions — `ExecutionError`, `RiskError`, `OrderError` (extends `ExecutionError`)
+- `core/models.py` additions — `OrderStatus` (StrEnum), `OrderSide` (StrEnum), `Position` (frozen dataclass with symbol, qty, entry_price, stop/TP prices, strategy_name, entry_date)
+- `db/models.py` additions — `OrderLog` table (broker_order_id, symbol, side, qty, status, stop/TP prices, strategy, reason, timestamps), `PortfolioSnapshot` table (equity, cash, positions_value, open_positions, daily_pnl)
+- `risk/position_sizer.py` — Fixed fractional sizing: `(equity × risk_pct) / stop_loss_pct`, capped by max_position_pct
+- `risk/limits.py` — 7 stateless limit checks (max positions, concentration, asset class exposure, daily/weekly loss, drawdown, PDT guard)
+- `risk/validators.py` — `ValidationResult` dataclass + `validate_signal()` chain with short-circuit on first failure
+- `risk/manager.py` — `RiskManager` orchestrating sizing + validation, accepts pre-computed equity/P&L values
+- `execution/alpaca_broker.py` — `AlpacaBroker` wrapping alpaca-py `TradingClient` with bracket order support, position close, account/order queries
+- `execution/engine.py` — `ExecutionEngine` with `reconcile()` (broker↔local sync), `process_signals()` (SELL first, BUY with risk checks), `save_snapshot()`, helper queries (`_get_peak_equity`, `_get_weekly_pnl`, `_get_day_trade_count`)
+- `app.py` — `tick()` cycle (reconcile → snapshot → data refresh → evaluate strategies → execute signals), `run()` startup with APScheduler `BlockingScheduler` + `CronTrigger`, graceful shutdown via SIGINT/SIGTERM
+- `__main__.py` additions — `bread run --mode paper` and `bread status` CLI commands
+- `config/default.yaml` additions — `risk:` and `execution:` sections with production defaults
+
+Structural decisions:
+- `Order` dataclass from design doc omitted — `OrderLog` DB model handles persistence, `Position` tracks live state
+- `RiskManager.evaluate()` takes pre-computed equity/P&L/day-trade-count values (not broker/DB objects) for testability
+- `process_signals()` takes `prices: dict[str, float]` to avoid extra broker API calls
+- Idempotency via open order check at start of `process_signals()` — skip symbols with pending orders
+- Module-level state in `app.py` (`_engine`, `_config`, etc.) with guard clause in `tick()` for safety
+- Bracket orders ensure stop-loss/take-profit persist on Alpaca servers even if bot crashes
+
+Deferred from Phase 3 to future phases:
+- Signal persistence to `signals_log` table (table exists, writes not implemented)
+- Event bus (`core/events.py`) — not needed for current architecture
+- Finnhub earnings calendar check (still no-op)
+- Trailing stops (static stop loss + bracket take-profit only)
+- Spread/liquidity and volatility validators (unnecessary for liquid ETF universe)
+
+Test count: 189 unit tests (up from 102 after Phase 2).
 
 ---
 

@@ -1,8 +1,21 @@
-# Phase 3: Execution + Paper Trading (Week 4)
+# Phase 3: Execution + Paper Trading (Week 4) — **COMPLETE**
 
 ## Goal
 
 Build the execution engine, risk management, and application orchestrator. Connect everything to Alpaca paper trading. This phase produces a fully operational paper trading bot that runs on a schedule, evaluates strategies, validates signals through risk checks, and submits bracket orders.
+
+## Implementation Notes
+
+Phase 3 is fully implemented with 189 unit tests passing (87 new tests added).
+
+Key deviations from the original design:
+- **`Order` dataclass omitted** — `OrderLog` DB model handles persistence directly; `Position` frozen dataclass tracks live state. The mutable `Order` dataclass added unnecessary indirection.
+- **`RiskManager.evaluate()` signature simplified** — takes pre-computed scalar values (`equity`, `buying_power`, `peak_equity`, `daily_pnl`, `weekly_pnl`, `day_trade_count`) instead of `TradeAccount` and DB session objects. This makes the entire risk layer pure and easily testable.
+- **`process_signals()` takes `prices: dict[str, float]`** — latest close prices passed in from tick() rather than fetching from broker, avoiding extra API calls.
+- **Event bus (`core/events.py`) not implemented** — direct method calls between modules are simpler and sufficient for the current single-threaded architecture.
+- **Signal persistence deferred** — `SignalLog` table exists but signals are not written during execution. Deferred to Phase 4 (monitoring).
+- **Finnhub earnings check still no-op** — deferred to future phase.
+- **Spread/liquidity and volatility validators deferred** — unnecessary for liquid ETF universe (SPY, QQQ, etc.).
 
 ---
 
@@ -101,22 +114,7 @@ class OrderSide(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
 
-@dataclass
-class Order:
-    symbol: str
-    side: OrderSide
-    qty: int
-    status: OrderStatus
-    broker_order_id: str | None = None
-    stop_loss_price: float | None = None
-    take_profit_price: float | None = None
-    filled_price: float | None = None
-    strategy_name: str = ""
-    reason: str = ""
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    filled_at: datetime | None = None
-
-@dataclass
+@dataclass(frozen=True)
 class Position:
     symbol: str
     qty: int
@@ -127,6 +125,8 @@ class Position:
     strategy_name: str
     entry_date: date
 ```
+
+> **Deviation:** The mutable `Order` dataclass was removed during implementation. Order persistence is handled directly by the `OrderLog` DB model, and live position state by the frozen `Position` dataclass. The intermediate `Order` object added no value.
 
 #### DB Tables (`db/models.py`)
 
@@ -251,13 +251,19 @@ def validate_signal(
     signal: Signal,
     position_size: int,
     price: float,
-    account: TradeAccount,     # from alpaca-py
+    buying_power: float,       # pre-computed from broker account
+    equity: float,
     positions: list[Position],
     config: RiskSettings,
     peak_equity: float,
+    daily_pnl: float,
+    weekly_pnl: float,
+    day_trade_count: int,
 ) -> ValidationResult:
     """Run all validators in order. Short-circuit on first failure."""
 ```
+
+> **Deviation from original design:** Takes pre-computed scalar values instead of `TradeAccount` object. The execution engine queries the broker once and passes derived values, keeping the risk layer pure and testable without mocking alpaca-py types.
 
 Validators run in order:
 
@@ -284,9 +290,13 @@ class RiskManager:
         self,
         signal: Signal,
         price: float,
-        account: TradeAccount,
+        buying_power: float,
+        equity: float,
         positions: list[Position],
         peak_equity: float,
+        daily_pnl: float,
+        weekly_pnl: float,
+        day_trade_count: int,
     ) -> tuple[int, ValidationResult]:
         """Size the position, then validate.
 
@@ -294,6 +304,8 @@ class RiskManager:
         If validation fails, shares may be > 0 but should not be used.
         """
 ```
+
+> **Deviation from original design:** Takes pre-computed values instead of `TradeAccount`. The execution engine's `process_signals()` fetches account info once and passes equity, buying_power, daily_pnl etc. as scalars.
 
 ---
 
@@ -382,8 +394,10 @@ class ExecutionEngine:
         4. Update equity and position market values.
         """
 
-    def process_signals(self, signals: list[Signal]) -> None:
+    def process_signals(self, signals: list[Signal], prices: dict[str, float]) -> None:
         """Process strategy output. SELL signals first, then BUY signals.
+
+        prices: latest close prices keyed by symbol (passed from tick(), no extra API call).
 
         SELL signals:
         - If we hold the position → call broker.close_position(symbol)

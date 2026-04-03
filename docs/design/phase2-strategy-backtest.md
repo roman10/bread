@@ -10,13 +10,13 @@ Build the strategy framework, implement the first strategy (ETF Momentum), and c
 
 **Status:** Complete.
 
-Scope has been trimmed to only what Phase 2 functionally needs. Deferred to their owning phases:
+Scope has been trimmed to only what Phase 2 functionally needs. Deferred items and their resolution:
 
-- **Event bus** (`core/events.py`) → Phase 3
-- **Finnhub data provider** → Phase 3 (earnings check replaced with a no-op stub in Phase 2)
-- **`get_latest_bar()`** on DataProvider → Phase 3
-- **Execution-related DB tables** (`orders`, `trades`) → Phase 3
-- **Portfolio snapshots table** → Phase 4
+- **Event bus** (`core/events.py`) → **Dropped.** Direct method calls sufficient for single-threaded architecture.
+- **Finnhub data provider** → Still deferred to future phase (earnings check remains a no-op).
+- **`get_latest_bar()`** on DataProvider → **Not needed.** Tick cycle uses BarCache for daily bars.
+- **Execution-related DB tables** (`orders`, `trades`) → **Done in Phase 3.** `OrderLog` table implemented; `trades` table not needed (history derivable from orders).
+- **Portfolio snapshots table** → **Done in Phase 3** (not Phase 4 as originally planned). `PortfolioSnapshot` table used by execution engine for peak equity, weekly P&L tracking.
 
 The contracts below are the implementation source of truth for Phase 2. They include the naming, path-resolution, indicator-dependency, and execution-order rules needed to implement Phase 2 without guessing.
 
@@ -61,7 +61,7 @@ Rules:
 - `stop_loss_pct` must be strictly positive. Enforced by `__post_init__` validation.
 - `reason` is a short string explaining which conditions triggered (for trade journal / debugging).
 - `frozen=True` — signals are immutable once created.
-- Additional models (`Order`, `Position`, `PortfolioSnapshot`) are deferred to Phase 3 where the consuming code exists.
+- Additional models (`OrderStatus`, `OrderSide`, `Position`) were implemented in Phase 3. The mutable `Order` dataclass was dropped — `OrderLog` DB model handles persistence directly.
 
 ### 2.2 New Exceptions (`core/exceptions.py`)
 
