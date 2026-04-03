@@ -309,9 +309,9 @@ def status_cmd() -> None:
             if open_orders:
                 typer.echo(f"\nOpen Orders ({len(open_orders)}):")
                 for o in open_orders:
-                    sym = o.symbol
+                    sym = str(o.symbol or "")
                     side = str(o.side).upper()
-                    qty = o.qty
+                    qty = int(float(o.qty or 0))
                     status = str(o.status).upper()
                     typer.echo(f"  {sym:<5} {side}  qty={qty}  status={status}")
             else:

@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from textwrap import dedent
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from bread.__main__ import app
+from bread.__main__ import _start_dashboard_thread, app
 
 runner = CliRunner()
 
@@ -197,3 +197,85 @@ class TestStatusEnhanced:
         assert result.exit_code == 0
         assert "Open Orders (1)" in result.stdout
         assert "SPY" in result.stdout
+
+
+class TestRunCmd:
+    def test_invalid_mode_rejected(self) -> None:
+        result = runner.invoke(app, ["run", "--mode", "yolo"])
+        assert result.exit_code == 1
+        assert "must be 'paper' or 'live'" in result.stderr
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_dashboard_auto_starts_by_default(self) -> None:
+        with (
+            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.app.run"),
+        ):
+            result = runner.invoke(app, ["run", "--mode", "paper"])
+
+        assert result.exit_code == 0
+        mock_dash.assert_called_once_with(8050)
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_no_dashboard_flag_skips_dashboard(self) -> None:
+        with (
+            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.app.run"),
+        ):
+            result = runner.invoke(app, ["run", "--mode", "paper", "--no-dashboard"])
+
+        assert result.exit_code == 0
+        mock_dash.assert_not_called()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_custom_dashboard_port(self) -> None:
+        with (
+            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.app.run"),
+        ):
+            result = runner.invoke(
+                app, ["run", "--mode", "paper", "--dashboard-port", "9000"]
+            )
+
+        assert result.exit_code == 0
+        mock_dash.assert_called_once_with(9000)
+
+
+class TestStartDashboardThread:
+    @pytest.mark.usefixtures("_config_env")
+    def test_prints_url(self) -> None:
+        from io import StringIO
+
+        mock_app = MagicMock()
+        output = StringIO()
+        with (
+            patch("bread.dashboard.app.create_app", return_value=mock_app),
+            patch("bread.__main__.typer.echo", side_effect=lambda m: output.write(m)),
+        ):
+            _start_dashboard_thread(8050)
+
+        assert "http://localhost:8050" in output.getvalue()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_starts_daemon_thread(self) -> None:
+        mock_app = MagicMock()
+        mock_thread = MagicMock()
+        with (
+            patch("bread.dashboard.app.create_app", return_value=mock_app),
+            patch("bread.__main__.typer.echo"),
+            patch("threading.Thread", return_value=mock_thread) as mock_thread_cls,
+        ):
+            _start_dashboard_thread(8050)
+
+        mock_thread_cls.assert_called_once()
+        assert mock_thread_cls.call_args == call(
+            target=mock_thread_cls.call_args.kwargs["target"],
+            daemon=True,
+            name="dashboard",
+        )
+        mock_thread.start.assert_called_once()
+
+    def test_silently_skips_when_dash_not_installed(self) -> None:
+        with patch.dict("sys.modules", {"bread.dashboard.app": None}):
+            # Should not raise
+            _start_dashboard_thread(8050)
