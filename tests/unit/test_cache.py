@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from bread.core.config import AppConfig
-from bread.data.cache import BarCache, is_trading_day, last_completed_trading_day
+from bread.data.cache import BarCache, is_market_open, is_trading_day, last_completed_trading_day
 from bread.db.database import init_db
 
 
@@ -80,6 +80,40 @@ class TestTradingDayHelpers:
         et = ZoneInfo("America/New_York")
         dt = datetime(2025, 1, 4, 12, 0, tzinfo=et).astimezone(UTC)
         assert last_completed_trading_day(dt) == date(2025, 1, 3)
+
+
+class TestIsMarketOpen:
+    _et = ZoneInfo("America/New_York")
+
+    def test_open_during_hours(self) -> None:
+        # Wednesday 10:00 AM ET
+        dt = datetime(2025, 1, 8, 10, 0, tzinfo=self._et)
+        assert is_market_open(dt) is True
+
+    def test_closed_before_open(self) -> None:
+        # Wednesday 9:00 AM ET
+        dt = datetime(2025, 1, 8, 9, 0, tzinfo=self._et)
+        assert is_market_open(dt) is False
+
+    def test_open_at_open(self) -> None:
+        # Wednesday 9:30 AM ET exactly
+        dt = datetime(2025, 1, 8, 9, 30, tzinfo=self._et)
+        assert is_market_open(dt) is True
+
+    def test_closed_at_close(self) -> None:
+        # Wednesday 4:00 PM ET exactly (market closes at 16:00)
+        dt = datetime(2025, 1, 8, 16, 0, tzinfo=self._et)
+        assert is_market_open(dt) is False
+
+    def test_closed_on_weekend(self) -> None:
+        # Saturday 11:00 AM ET
+        dt = datetime(2025, 1, 4, 11, 0, tzinfo=self._et)
+        assert is_market_open(dt) is False
+
+    def test_closed_on_holiday(self) -> None:
+        # New Year's Day 2025 (Wednesday) at 11:00 AM ET
+        dt = datetime(2025, 1, 1, 11, 0, tzinfo=self._et)
+        assert is_market_open(dt) is False
 
 
 class TestBarCache:

@@ -46,6 +46,7 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
 # Data (top-level only — don't ignore src/bread/data/)
 /data/

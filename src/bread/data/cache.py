@@ -32,6 +32,15 @@ def is_trading_day(d: date) -> bool:
     return d.weekday() < 5 and d not in _nyse_holidays
 
 
+def is_market_open(now_et: datetime | None = None) -> bool:
+    """Return True if NYSE is currently open (Mon-Fri 9:30-16:00 ET, excl. holidays)."""
+    if now_et is None:
+        now_et = datetime.now(_et)
+    if now_et.weekday() >= 5 or now_et.date() in _nyse_holidays:
+        return False
+    return time(9, 30) <= now_et.time() < time(16, 0)
+
+
 def last_completed_trading_day(as_of_utc: datetime) -> date:
     local_dt = as_of_utc.astimezone(_et)
     candidate = local_dt.date()

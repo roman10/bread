@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import bread.app as app_module
@@ -95,3 +96,42 @@ class TestTick:
         mock_strategy.evaluate.assert_called_once()
         # Restore
         app_module._strategies = []
+
+
+class TestOnJobMissed:
+    def _make_event(self, job_id: str) -> MagicMock:
+        event = MagicMock()
+        event.job_id = job_id
+        event.scheduled_run_time = datetime(2025, 1, 8, 10, 0)
+        return event
+
+    @patch("bread.data.cache.is_market_open", return_value=True)
+    def test_market_open_triggers_recovery(self, mock_market: MagicMock) -> None:
+        mock_sched = MagicMock()
+        app_module._scheduler = mock_sched
+        try:
+            app_module._on_job_missed(self._make_event("trading_tick"))
+            mock_sched.add_job.assert_called_once_with(
+                app_module.tick, id="recovery_tick", replace_existing=True
+            )
+        finally:
+            app_module._scheduler = None
+
+    @patch("bread.data.cache.is_market_open", return_value=False)
+    def test_market_closed_no_recovery(self, mock_market: MagicMock) -> None:
+        mock_sched = MagicMock()
+        app_module._scheduler = mock_sched
+        try:
+            app_module._on_job_missed(self._make_event("trading_tick"))
+            mock_sched.add_job.assert_not_called()
+        finally:
+            app_module._scheduler = None
+
+    def test_non_tick_job_no_recovery(self) -> None:
+        mock_sched = MagicMock()
+        app_module._scheduler = mock_sched
+        try:
+            app_module._on_job_missed(self._make_event("daily_summary"))
+            mock_sched.add_job.assert_not_called()
+        finally:
+            app_module._scheduler = None

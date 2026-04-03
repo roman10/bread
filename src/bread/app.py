@@ -6,6 +6,7 @@ import logging
 import signal
 import sys
 
+from apscheduler.events import EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -142,6 +143,23 @@ def tick() -> None:
             _alert_manager.notify_error(traceback.format_exc()[-500:])
 
 
+def _on_job_missed(event: JobExecutionEvent) -> None:
+    """Handle missed scheduler jobs — log and optionally run a recovery tick."""
+    logger.warning(
+        "Missed scheduled job: %s (scheduled=%s)",
+        event.job_id,
+        event.scheduled_run_time,
+    )
+    if event.job_id != "trading_tick":
+        return
+
+    from bread.data.cache import is_market_open
+
+    if is_market_open() and _scheduler is not None:
+        logger.info("Market open — scheduling recovery tick")
+        _scheduler.add_job(tick, id="recovery_tick", replace_existing=True)
+
+
 def _shutdown(signum: int, _frame: object) -> None:
     """Graceful shutdown handler."""
     logger.info("Shutdown signal received (signal=%d)", signum)
@@ -254,6 +272,8 @@ def run(mode: str) -> None:
             timezone="America/New_York",
         ),
         id="trading_tick",
+        misfire_grace_time=900,
+        coalesce=True,
     )
     _scheduler.add_job(
         _send_daily_summary,
@@ -264,7 +284,10 @@ def run(mode: str) -> None:
             timezone="America/New_York",
         ),
         id="daily_summary",
+        misfire_grace_time=900,
+        coalesce=True,
     )
+    _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
 
     # 11. Signal handlers
     signal.signal(signal.SIGINT, _shutdown)
