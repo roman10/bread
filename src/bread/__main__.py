@@ -162,14 +162,47 @@ def backtest_cmd(
         raise SystemExit(1) from exc
 
 
+def _start_dashboard_thread(port: int) -> None:
+    """Start the dashboard in a background daemon thread if deps are available."""
+    try:
+        from bread.dashboard.app import create_app
+    except ImportError:
+        return  # dash deps not installed — silently skip
+
+    import threading
+
+    config = load_config()
+    dash_app = create_app(config)
+
+    def _serve() -> None:
+        logging.getLogger("werkzeug").setLevel(logging.WARNING)
+        try:
+            dash_app.run(host="127.0.0.1", port=port, debug=False)
+        except OSError:
+            logger.warning("Dashboard port %d in use — skipping auto-start", port)
+
+    thread = threading.Thread(target=_serve, daemon=True, name="dashboard")
+    thread.start()
+    typer.echo(f"Dashboard: http://localhost:{port}")
+
+
 @app.command("run")
 def run_cmd(
     mode: str = typer.Option("paper", "--mode", help="Trading mode: paper or live"),
+    dashboard: bool = typer.Option(
+        True, "--dashboard/--no-dashboard", help="Auto-start dashboard UI"
+    ),
+    dashboard_port: int = typer.Option(8050, "--dashboard-port", help="Dashboard port"),
 ) -> None:
     """Start the trading bot."""
     if mode not in ("paper", "live"):
         typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
         raise SystemExit(1)
+    import os
+
+    os.environ["BREAD_MODE"] = mode
+    if dashboard:
+        _start_dashboard_thread(dashboard_port)
     try:
         from bread.app import run
 
