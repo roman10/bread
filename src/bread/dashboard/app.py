@@ -77,7 +77,7 @@ def create_app(config: AppConfig) -> dash.Dash:
         Input("off-interval", "data"),
     )
 
-    # Connection status dot
+    # Connection status dot (reflects broker availability at startup)
     @app.callback(
         Output("connection-dot", "children"),
         Input("refresh-interval", "n_intervals"),
@@ -85,11 +85,7 @@ def create_app(config: AppConfig) -> dash.Dash:
     def _update_connection_dot(_n: int) -> html.Span:
         d = app.server.config["data"]
         if d.broker_available:
-            try:
-                d.get_account_summary()
-                return html.Span("\u25cf Connected", style={"color": "#00bc8c"})
-            except Exception:
-                pass
+            return html.Span("\u25cf Connected", style={"color": "#00bc8c"})
         return html.Span("\u25cf API unavailable", style={"color": "#f39c12"})
 
     return app

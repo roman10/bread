@@ -77,6 +77,7 @@ layout = dbc.Container([
             dcc.Dropdown(
                 id="trades-strategy-filter",
                 placeholder="All strategies",
+                clearable=True,
                 className="dash-bootstrap",
             ),
         ], md=3),
