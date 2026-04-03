@@ -221,6 +221,8 @@ class DashboardData:
             last_tick = session.execute(
                 select(func.max(PortfolioSnapshot.timestamp_utc))
             ).scalar_one_or_none()
+            if last_tick is not None and last_tick.tzinfo is None:
+                last_tick = last_tick.replace(tzinfo=UTC)
 
             ticks_today: int = (
                 session.execute(
