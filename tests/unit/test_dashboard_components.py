@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 import plotly.graph_objects as go
 
 from bread.dashboard.charts import make_drawdown_figure, make_equity_figure, make_pnl_figure
 from bread.dashboard.components import (
     format_currency,
+    format_local_dt,
     format_pct,
     make_kpi_card,
     make_kpi_row,
@@ -62,6 +63,29 @@ class TestFormatHelpers:
         assert pnl_color(100) == "success"
         assert pnl_color(-50) == "danger"
         assert pnl_color(0) == "secondary"
+
+
+class TestFormatLocalDt:
+    def test_none_returns_fallback(self):
+        assert format_local_dt(None) == ""
+        assert format_local_dt(None, fallback="Never") == "Never"
+
+    def test_utc_datetime_produces_local_string(self):
+        dt = datetime(2026, 7, 15, 18, 30, 0, tzinfo=UTC)
+        result = format_local_dt(dt)
+        # Should contain AM/PM and a timezone abbreviation
+        assert "AM" in result or "PM" in result
+
+    def test_naive_datetime_assumed_utc(self):
+        naive = datetime(2026, 7, 15, 18, 30, 0)
+        aware = datetime(2026, 7, 15, 18, 30, 0, tzinfo=UTC)
+        assert format_local_dt(naive) == format_local_dt(aware)
+
+    def test_custom_format(self):
+        dt = datetime(2026, 7, 15, 18, 30, 0, tzinfo=UTC)
+        result = format_local_dt(dt, fmt="%H:%M %Z")
+        # strftime should have replaced %Z with an actual abbreviation
+        assert "%Z" not in result
 
 
 class TestEquityChart:

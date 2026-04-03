@@ -11,6 +11,7 @@ from flask import current_app
 from bread.dashboard.charts import make_drawdown_figure, make_equity_figure
 from bread.dashboard.components import (
     format_currency,
+    format_local_dt,
     format_pct,
     make_kpi_card,
     make_kpi_row,
@@ -107,7 +108,7 @@ _STRATEGY_COLS = [
 ]
 
 _SIGNAL_COLS = [
-    {"field": "time", "headerName": "Time", "width": 140, "sort": "desc"},
+    {"field": "time", "headerName": "Time", "width": 200, "sort": "desc"},
     {"field": "strategy", "headerName": "Strategy", "width": 140},
     {"field": "symbol", "headerName": "Symbol", "width": 80},
     {
@@ -286,7 +287,7 @@ def update_bot_activity(_n: int) -> dbc.Row:
     activity = data.get_bot_activity()
 
     last_tick = activity["last_tick"]
-    last_tick_str = last_tick.strftime("%H:%M:%S") if last_tick else "Never"
+    last_tick_str = format_local_dt(last_tick, fmt="%-I:%M:%S %p %Z", fallback="Never")
 
     cards = [
         make_kpi_card(

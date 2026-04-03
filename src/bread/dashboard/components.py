@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import dash_bootstrap_components as dbc
 from dash import html
 
@@ -52,3 +54,18 @@ def pnl_color(value: float) -> str:
     if value < 0:
         return "danger"
     return "secondary"
+
+
+def format_local_dt(
+    dt: datetime | None,
+    fmt: str = "%-I:%M %p %Z",
+    *,
+    fallback: str = "",
+) -> str:
+    """Format a UTC datetime for display in the system's local timezone."""
+    if dt is None:
+        return fallback
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local_dt = dt.astimezone()  # no arg = system timezone
+    return local_dt.strftime(fmt)

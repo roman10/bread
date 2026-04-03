@@ -276,7 +276,7 @@ class TestDashboardDataLive:
         mock_order.qty = "5"
         mock_order.status = "accepted"
         mock_order.type = "market"
-        mock_order.submitted_at = "2026-03-10T10:00:00Z"
+        mock_order.submitted_at = datetime(2026, 3, 10, 10, 0, 0, tzinfo=UTC)
         mock_broker.get_orders.return_value = [mock_order]
 
         config = _make_config()

@@ -11,6 +11,7 @@ import yaml
 from sqlalchemy import func, select
 
 from bread.core.config import CONFIG_DIR
+from bread.dashboard.components import format_local_dt
 from bread.db.database import get_engine, get_session_factory, init_db
 from bread.db.models import OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
@@ -145,7 +146,9 @@ class DashboardData:
                     "qty": str(o.qty),
                     "status": str(o.status).upper(),
                     "type": str(o.type).upper() if o.type else "",
-                    "submitted_at": str(o.submitted_at or ""),
+                    "submitted_at": format_local_dt(
+                        o.submitted_at, fmt="%Y-%m-%d %-I:%M %p %Z"
+                    ),
                 }
                 for o in orders
             ]
@@ -291,7 +294,8 @@ class DashboardData:
                     day_label = "tomorrow"
                 else:
                     day_label = next_open.strftime("%a")
-            market_next = f"Opens {day_label} 9:30 AM ET"
+            open_local = format_local_dt(next_open, fmt="%-I:%M %p %Z")
+            market_next = f"Opens {day_label} {open_local}"
 
         return {
             "last_tick": last_tick,
@@ -362,7 +366,7 @@ class DashboardData:
 
         return [
             {
-                "time": r.signal_timestamp.strftime("%Y-%m-%d %H:%M"),
+                "time": format_local_dt(r.signal_timestamp, fmt="%Y-%m-%d %-I:%M %p %Z"),
                 "strategy": r.strategy_name,
                 "symbol": r.symbol,
                 "direction": r.direction,
