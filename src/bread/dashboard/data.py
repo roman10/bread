@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
 from bread.db.database import get_engine, get_session_factory, init_db
-from bread.db.models import PortfolioSnapshot
+from bread.db.models import OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
 from bread.monitoring.journal import get_journal, get_journal_summary
 from bread.monitoring.tracker import get_daily_summaries, get_drawdown_series, get_period_pnl
@@ -64,8 +65,12 @@ class DashboardData:
         """Return account KPIs. Empty defaults if broker unavailable."""
         if self._broker is None:
             return {
-                "equity": 0.0, "cash": 0.0, "buying_power": 0.0,
-                "daily_pnl": 0.0, "daily_pct": 0.0, "drawdown_pct": 0.0,
+                "equity": 0.0,
+                "cash": 0.0,
+                "buying_power": 0.0,
+                "daily_pnl": 0.0,
+                "daily_pct": 0.0,
+                "drawdown_pct": 0.0,
             }
         try:
             account = self._broker.get_account()
@@ -95,8 +100,12 @@ class DashboardData:
         except Exception:
             logger.exception("Failed to fetch account summary")
             return {
-                "equity": 0.0, "cash": 0.0, "buying_power": 0.0,
-                "daily_pnl": 0.0, "daily_pct": 0.0, "drawdown_pct": 0.0,
+                "equity": 0.0,
+                "cash": 0.0,
+                "buying_power": 0.0,
+                "daily_pnl": 0.0,
+                "daily_pct": 0.0,
+                "drawdown_pct": 0.0,
             }
 
     def get_positions(self) -> list[dict]:
@@ -174,13 +183,148 @@ class DashboardData:
         """Return completed trades."""
         with self._sf() as session:
             return get_journal(
-                session, start=start, end=end,
-                strategy=strategy, symbol=symbol, limit=limit,
+                session,
+                start=start,
+                end=end,
+                strategy=strategy,
+                symbol=symbol,
+                limit=limit,
             )
 
     def get_journal_summary(self, entries: list[JournalEntry]) -> dict:
         """Compute summary stats from journal entries."""
         return get_journal_summary(entries)
+
+    # ------------------------------------------------------------------
+    # Bot activity & strategy status
+    # ------------------------------------------------------------------
+
+    def get_bot_activity(self) -> dict[str, object]:
+        """Return bot activity metrics for the dashboard."""
+        now_utc = datetime.now(UTC)
+        et = ZoneInfo("America/New_York")
+        now_et = now_utc.astimezone(et)
+        today_start_utc = now_et.replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        ).astimezone(UTC)
+
+        with self._sf() as session:
+            last_tick = session.execute(
+                select(func.max(PortfolioSnapshot.timestamp_utc))
+            ).scalar_one_or_none()
+
+            ticks_today: int = (
+                session.execute(
+                    select(func.count(PortfolioSnapshot.id)).where(
+                        PortfolioSnapshot.timestamp_utc >= today_start_utc
+                    )
+                ).scalar_one()
+                or 0
+            )
+
+            signals_today: int = (
+                session.execute(
+                    select(func.count(SignalLog.id)).where(
+                        SignalLog.signal_timestamp >= today_start_utc
+                    )
+                ).scalar_one()
+                or 0
+            )
+
+            trades_today: int = (
+                session.execute(
+                    select(func.count(OrderLog.id)).where(
+                        OrderLog.created_at_utc >= today_start_utc,
+                        OrderLog.status != "REJECTED",
+                    )
+                ).scalar_one()
+                or 0
+            )
+
+        # Determine bot status
+        is_market_hours = (
+            now_et.weekday() < 5
+            and (now_et.hour > 9 or (now_et.hour == 9 and now_et.minute >= 30))
+            and now_et.hour < 16
+        )
+
+        if last_tick is None:
+            status, status_color = "No Data", "secondary"
+        elif is_market_hours:
+            minutes_since = (now_utc - last_tick).total_seconds() / 60
+            if minutes_since <= 20:
+                status, status_color = "Running", "success"
+            else:
+                status, status_color = "Stale", "danger"
+        else:
+            status, status_color = "Idle", "warning"
+
+        return {
+            "last_tick": last_tick,
+            "ticks_today": ticks_today,
+            "signals_today": signals_today,
+            "trades_today": trades_today,
+            "status": status,
+            "status_color": status_color,
+        }
+
+    def get_strategy_status(self) -> list[dict[str, object]]:
+        """Return strategy configuration details for the dashboard."""
+        result: list[dict[str, object]] = []
+        for s in self._config.strategies:
+            if not s.enabled:
+                indicator, indicator_color = "disabled", "secondary"
+            elif self._config.mode not in s.modes:
+                indicator, indicator_color = "wrong-mode", "warning"
+            else:
+                indicator, indicator_color = "active", "success"
+
+            result.append(
+                {
+                    "name": s.name,
+                    "enabled": s.enabled,
+                    "modes": ", ".join(s.modes),
+                    "weight": s.weight,
+                    "status": indicator,
+                    "status_color": indicator_color,
+                }
+            )
+        return result
+
+    def get_recent_signals(
+        self,
+        hours: int = 24,
+        strategy: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Return recent signals from the signal log."""
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        with self._sf() as session:
+            query = (
+                select(SignalLog)
+                .where(SignalLog.signal_timestamp >= cutoff)
+                .order_by(SignalLog.signal_timestamp.desc())
+            )
+            if strategy:
+                query = query.where(SignalLog.strategy_name == strategy)
+
+            rows = session.execute(query).scalars().all()
+
+        return [
+            {
+                "time": r.signal_timestamp.strftime("%Y-%m-%d %H:%M"),
+                "strategy": r.strategy_name,
+                "symbol": r.symbol,
+                "direction": r.direction,
+                "strength": round(r.strength, 2),
+                "stop_loss_pct": round(r.stop_loss_pct * 100, 1),
+                "reason": r.reason,
+            }
+            for r in rows
+        ]
 
     def dispose(self) -> None:
         """Clean up database engine."""

@@ -16,6 +16,7 @@ from bread.data.alpaca_data import AlpacaDataProvider
 from bread.data.cache import BarCache
 from bread.data.indicators import compute_indicators
 from bread.db.database import get_engine, get_session_factory, init_db
+from bread.db.models import SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
 from bread.execution.engine import ExecutionEngine
 from bread.monitoring.alerts import AlertManager
@@ -71,6 +72,26 @@ def tick() -> None:
                 all_signals.extend(signals)
             except Exception:
                 logger.exception("Strategy %s evaluation failed", strategy.name)
+
+            # 4b. Log signals to DB
+            if signals:
+                try:
+                    with _session_factory() as session:
+                        for sig in signals:
+                            session.add(
+                                SignalLog(
+                                    strategy_name=sig.strategy_name,
+                                    symbol=sig.symbol,
+                                    direction=sig.direction,
+                                    strength=sig.strength,
+                                    stop_loss_pct=sig.stop_loss_pct,
+                                    reason=sig.reason,
+                                    signal_timestamp=sig.timestamp,
+                                )
+                            )
+                        session.commit()
+                except Exception:
+                    logger.exception("Failed to log signals")
 
         # 5. Execute signals
         positions_before = {p.symbol for p in _engine.get_positions()}
