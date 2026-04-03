@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
+from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 from urllib3.exceptions import ProtocolError
@@ -50,6 +51,8 @@ class AlpacaBroker:
             secret_key=secret_key,
             paper=(config.mode == "paper"),
         )
+        adapter = HTTPAdapter(pool_maxsize=20)
+        self._client._session.mount("https://", adapter)
 
     def get_account(self) -> TradeAccount:
         """Fetch account info (equity, buying_power, cash, last_equity)."""

@@ -9,6 +9,7 @@ import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -42,6 +43,8 @@ class AlpacaDataProvider(DataProvider):
                 f"Missing API credentials for {config.mode} mode"
             )
         self._client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+        adapter = HTTPAdapter(pool_maxsize=20)
+        self._client._session.mount("https://", adapter)
         self._config = config
         self._retrier = Retrying(
             retry=retry_if_exception_type(
