@@ -88,4 +88,11 @@ def create_app(config: AppConfig) -> dash.Dash:
             return html.Span("\u25cf Connected", style={"color": "#00bc8c"})
         return html.Span("\u25cf API unavailable", style={"color": "#f39c12"})
 
+    # Warm up: trigger Dash's lazy _setup_server so the callback map is fully
+    # populated before the threaded server starts accepting real requests.
+    # Without this, concurrent GET + POST on first page load race past the
+    # one-time init flag, causing "Callback not found" KeyErrors.
+    with app.server.test_client() as client:
+        client.get("/")
+
     return app
