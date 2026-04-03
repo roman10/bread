@@ -7,8 +7,10 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+import yaml
 from sqlalchemy import func, select
 
+from bread.core.config import CONFIG_DIR
 from bread.db.database import get_engine, get_session_factory, init_db
 from bread.db.models import OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
@@ -282,12 +284,25 @@ class DashboardData:
             else:
                 indicator, indicator_color = "active", "success"
 
+            # Load universe from strategy YAML config
+            config_rel = s.config_path or f"strategies/{s.name}.yaml"
+            config_path = CONFIG_DIR / config_rel
+            universe: list[str] = []
+            try:
+                with open(config_path) as f:
+                    cfg = yaml.safe_load(f)
+                if isinstance(cfg, dict):
+                    universe = cfg.get("universe", [])
+            except Exception:
+                logger.debug("Could not load config for %s", s.name)
+
             result.append(
                 {
                     "name": s.name,
                     "enabled": s.enabled,
                     "modes": ", ".join(s.modes),
                     "weight": s.weight,
+                    "universe": ", ".join(universe),
                     "status": indicator,
                     "status_color": indicator_color,
                 }

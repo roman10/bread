@@ -103,6 +103,7 @@ _STRATEGY_COLS = [
         "type": "numericColumn",
         "valueFormatter": {"function": "params.value.toFixed(2)"},
     },
+    {"field": "universe", "headerName": "Universe", "flex": 1, "tooltipField": "universe"},
 ]
 
 _SIGNAL_COLS = [
