@@ -289,6 +289,12 @@ def update_bot_activity(_n: int) -> dbc.Row:
     last_tick_str = last_tick.strftime("%H:%M:%S") if last_tick else "Never"
 
     cards = [
+        make_kpi_card(
+            "Market",
+            activity["market_status"],
+            subtitle=activity["market_next"],
+            color=activity["market_status_color"],
+        ),
         make_kpi_card("Bot Status", activity["status"], color=activity["status_color"]),
         make_kpi_card("Last Tick", last_tick_str, color="light"),
         make_kpi_card("Ticks Today", str(activity["ticks_today"]), color="info"),

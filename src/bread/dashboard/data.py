@@ -264,6 +264,35 @@ class DashboardData:
         else:
             status, status_color = "Idle", "warning"
 
+        # Market status and next transition
+        if is_market_hours:
+            market_status, market_status_color = "Open", "success"
+            close_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+            remaining = close_et - now_et
+            hours, remainder = divmod(int(remaining.total_seconds()), 3600)
+            mins = remainder // 60
+            market_next = f"Closes in {hours}h {mins}m"
+        else:
+            market_status, market_status_color = "Closed", "secondary"
+            # Find next market open
+            next_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+            if now_et.weekday() < 5 and (
+                now_et.hour < 9 or (now_et.hour == 9 and now_et.minute < 30)
+            ):
+                # Today before open
+                day_label = "today"
+            else:
+                # After close or weekend — advance to next weekday
+                next_open += timedelta(days=1)
+                while next_open.weekday() >= 5:
+                    next_open += timedelta(days=1)
+                delta_days = (next_open.date() - now_et.date()).days
+                if delta_days == 1:
+                    day_label = "tomorrow"
+                else:
+                    day_label = next_open.strftime("%a")
+            market_next = f"Opens {day_label} 9:30 AM ET"
+
         return {
             "last_tick": last_tick,
             "ticks_today": ticks_today,
@@ -271,6 +300,9 @@ class DashboardData:
             "trades_today": trades_today,
             "status": status,
             "status_color": status_color,
+            "market_status": market_status,
+            "market_status_color": market_status_color,
+            "market_next": market_next,
         }
 
     def get_strategy_status(self) -> list[dict[str, object]]:
