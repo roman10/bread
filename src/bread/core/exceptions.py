@@ -39,3 +39,11 @@ class IndicatorError(BreadError):
 
 class InsufficientHistoryError(IndicatorError):
     """Not enough historical data to compute the longest configured indicator window."""
+
+
+class StrategyError(BreadError):
+    """Strategy evaluation error."""
+
+
+class BacktestError(BreadError):
+    """Backtest engine error."""

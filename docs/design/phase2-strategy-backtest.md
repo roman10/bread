@@ -117,6 +117,14 @@ class AppConfig(BaseModel):
     # ... existing fields ...
     strategies: list[StrategySettings] = Field(default_factory=list)
     backtest: BacktestSettings = Field(default_factory=BacktestSettings)
+
+    @model_validator(mode="after")
+    def _unique_strategy_names(self) -> AppConfig:
+        names = [s.name for s in self.strategies]
+        if len(names) != len(set(names)):
+            dupes = {n for n in names if names.count(n) > 1}
+            raise ValueError(f"Duplicate strategy names: {dupes}")
+        return self
 ```
 
 #### `config/default.yaml` additions
@@ -136,11 +144,18 @@ backtest:
 
 Strategy YAML files are loaded on demand by the strategy implementation, not by `load_config()`. `load_config()` validates only the `StrategySettings` metadata.
 
+Phase 2 exports the config directory path for strategy config resolution:
+
+```python
+# Add to core/config.py (rename existing _CONFIG_DIR)
+CONFIG_DIR: Path = Path(__file__).resolve().parents[3] / "config"
+```
+
 Rules:
 - `StrategySettings.name` is the canonical strategy identifier. The same exact lowercase snake_case value is used in config, the CLI `--strategy` flag, the registry key, and `Signal.strategy_name`.
-- Strategy names must be unique within `AppConfig.strategies`.
-- `StrategySettings.config_path` is resolved relative to the project `config/` directory.
-- The CLI resolves `config_path` to an absolute `Path` before instantiating the strategy.
+- Strategy names must be unique within `AppConfig.strategies` (enforced by the `_unique_strategy_names` validator above).
+- `StrategySettings.config_path` is resolved relative to `CONFIG_DIR`.
+- The CLI resolves `config_path` to an absolute `Path` via `CONFIG_DIR / strategy_settings.config_path` before instantiating the strategy.
 - Phase 2 creates `config/strategies/etf_momentum.yaml` as part of the implementation.
 
 ### 2.4 Strategy Framework
@@ -329,11 +344,10 @@ Rules:
 class HistoricalDataFeed:
     def __init__(
         self,
-        session: Session,
         provider: DataProvider,
         config: AppConfig,
     ) -> None:
-        """Uses the existing BarCache + compute_indicators pipeline."""
+        """Fetches historical data directly from the provider."""
         ...
 
     def load_universe(
@@ -352,12 +366,15 @@ class HistoricalDataFeed:
 ```
 
 Rules:
-- Uses `BarCache.get_bars()` to fetch/cache raw bars for each symbol.
-- Calls `compute_indicators()` on each symbol's DataFrame using the global `AppConfig.indicators` settings.
-- Filters the enriched DataFrame to `[start, end]` inclusive.
-- If a symbol has insufficient history for indicators, log a warning and exclude it from the result (do not raise).
+- Computes the longest indicator window from `config.indicators` (same formula as `compute_indicators()` uses) and calculates `fetch_start = start - timedelta(days=int(longest_window * 1.5))` to provide sufficient pre-`start` data for indicator warmup.
+- For each symbol, calls `provider.get_bars(symbol, fetch_start, end, config.data.default_timeframe)` to fetch raw bars covering the warmup + backtest range.
+- Calls `compute_indicators()` on each symbol's full DataFrame using the global `AppConfig.indicators` settings.
+- Filters the enriched DataFrame to `[start, end]` inclusive **after** indicator computation, so indicator values at `start` are valid. Filtering compares `.date()` of the UTC DatetimeIndex against `start` and `end`.
+- If a symbol raises `InsufficientHistoryError` during indicator computation, log a warning and exclude it from the result (do not raise).
+- If `provider.get_bars()` raises `DataProviderError` for a symbol (e.g. unknown ticker), log a warning and exclude it.
 - Returns only symbols that have data within the requested date range.
-- Returned symbols may be a strict subset of `strategy.universe`.
+- Returned symbols may be a strict subset of the requested `symbols` list.
+- Does **not** use `BarCache`. Backtesting calls the provider directly for the exact date range needed, avoiding the cache's `lookback_days`-relative fetch logic which cannot cover arbitrary historical ranges.
 
 #### Backtest engine (`backtest/engine.py`)
 
@@ -378,7 +395,7 @@ class Trade:
 @dataclass
 class BacktestResult:
     trades: list[Trade]
-    equity_curve: pd.Series           # DatetimeIndex → portfolio value
+    equity_curve: pd.Series           # Index of date objects → portfolio value (one entry per simulation date)
     metrics: dict[str, float | int]   # output of compute_metrics()
     initial_capital: float
     final_equity: float
@@ -427,7 +444,7 @@ The backtest loop is:
    - Ignore any symbol that already exited earlier on the same simulation date; no same-day exit-and-re-entry in Phase 2.
    - Sort eligible BUY signals by descending `strength`, then by `symbol` ascending as a deterministic tie-breaker.
    - Compute `equity_before_entries` after all exits for the day.
-   - `capital_per_position = equity_before_entries * (1 / max_positions)` where `max_positions = 5`
+   - `capital_per_position = equity_before_entries * (1 / max_positions)` where `max_positions = 5`. This fixed-fraction approach (industry standard in backtrader, zipline, QuantConnect) trades capital efficiency for predictable risk — each position is always 20% regardless of open slots. A dynamic `equity / available_slots` approach is deferred to Phase 3's risk config alongside trailing stops.
    - Apply slippage: `entry_price = close * (1 + slippage_pct)`
    - Compute position size: `shares = floor(capital_per_position / entry_price)`
    - Compute stop loss price once at entry: `entry_price * (1 - stop_loss_pct)`
@@ -441,9 +458,17 @@ The backtest loop is:
 - If insufficient cash to open a new position, skip the signal (log at DEBUG).
 - Stop loss price is static for the life of the trade in Phase 2. Trailing stops are deferred to Phase 3.
 - Gap-through stop-loss behavior is simplified in Phase 2: if a bar trades through the stop, the fill price is still `stop_loss_price`.
+- On exit: `cash += shares * exit_price - commission_per_trade`. Commission applies to both entry and exit.
+- `trade.pnl = (exit_price - entry_price) * shares - 2 * commission_per_trade`.
+- Exit precedence when multiple conditions trigger on the same bar for the same symbol: stop-loss (step 2) wins over time-stop (step 2, checked second), which wins over strategy SELL (step 5). Only the first triggered exit applies; the position is already closed by the time later checks run.
 - `trading_days_held` counts completed trading bars after the entry bar. Example: `time_stop_days = 15` exits on the 15th bar after `entry_date`; the entry day does not count.
 - If `universe_data` is empty after loading, `run()` raises `BacktestError`.
 - Trades that are still open at end of backtest are force-closed at the last available bar's close price on or before `end` with `exit_reason = "backtest_end"`.
+
+**Logging:**
+- INFO: trade entries (`ENTRY symbol=SPY shares=10 price=450.45 stop=427.93`), trade exits (`EXIT symbol=SPY price=460.00 pnl=95.50 reason=rsi_overbought`), backtest start/end summary.
+- DEBUG: signal evaluation counts per simulation date, skipped signals (insufficient cash, position limit, no open position for SELL), equity snapshots, data feed symbol load/exclusion.
+- WARNING: symbols excluded from universe (insufficient history, provider errors).
 
 #### Metrics (`backtest/metrics.py`)
 
@@ -475,7 +500,7 @@ def compute_metrics(
 | `win_rate_pct` | `winning_trades / total_trades * 100` | A trade wins if `pnl > 0`. Use 0.0 if no trades. |
 | `profit_factor` | `sum(winning_pnl) / abs(sum(losing_pnl))` | Use `float('inf')` if no losing trades. Use 0.0 if no winning trades. |
 | `total_trades` | count of closed trades | |
-| `avg_holding_days` | `mean(exit_date - entry_date)` in calendar days | Use 0.0 if no trades. |
+| `avg_holding_days` | `mean(exit_date - entry_date)` in calendar days | Calendar days (includes weekends/holidays) is the standard user-facing convention. Use 0.0 if no trades. |
 
 Rules:
 - Daily returns are computed from the equity curve: `equity_curve.pct_change().dropna()`.
@@ -499,7 +524,9 @@ class SignalLog(Base):
     stop_loss_pct: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str] = mapped_column(String, nullable=False)
     signal_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
     __table_args__ = (
         Index("ix_signals_strategy_symbol", "strategy_name", "symbol"),

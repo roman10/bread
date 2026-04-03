@@ -1,0 +1,25 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+  - XLE
+  - XLV
+  - GLD
+  - TLT
+
+entry:
+  sma_long: 200
+  rsi_period: 14
+  rsi_oversold: 30
+  sma_fast: 20
+  sma_mid: 50
+  volume_sma_period: 20
+  volume_mult: 1.0
+
+exit:
+  rsi_overbought: 70
+  atr_stop_mult: 1.5
+  time_stop_days: 15

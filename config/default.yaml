@@ -24,3 +24,12 @@ indicators:
   bollinger_period: 20
   bollinger_stddev: 2.0
   volume_sma_period: 20
+
+strategies:
+  - name: etf_momentum
+    config_path: strategies/etf_momentum.yaml
+
+backtest:
+  initial_capital: 10000.0
+  commission_per_trade: 0.0
+  slippage_pct: 0.001

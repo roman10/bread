@@ -37,7 +37,7 @@ def _config_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BREAD_MODE", raising=False)
 
     # Patch the config dir so load_config finds our tmp config
-    monkeypatch.setattr("bread.core.config._CONFIG_DIR", config_dir)
+    monkeypatch.setattr("bread.core.config.CONFIG_DIR", config_dir)
 
 
 def _make_ohlcv(rows: int = 250) -> pd.DataFrame:

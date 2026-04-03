@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, UniqueConstraint
+from sqlalchemy import DateTime, Float, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -29,4 +29,26 @@ class MarketDataCache(Base):
     __table_args__ = (
         UniqueConstraint("symbol", "timeframe", "timestamp_utc", name="uq_symbol_tf_ts"),
         Index("ix_symbol_tf_ts", "symbol", "timeframe", "timestamp_utc"),
+    )
+
+
+class SignalLog(Base):
+    __tablename__ = "signals_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_name: Mapped[str] = mapped_column(String, nullable=False)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    direction: Mapped[str] = mapped_column(String, nullable=False)
+    strength: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    signal_timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_signals_strategy_symbol", "strategy_name", "symbol"),
     )

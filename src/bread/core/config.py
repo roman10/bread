@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from bread.core.exceptions import ConfigError
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_DIR = _PROJECT_ROOT / "config"
+CONFIG_DIR: Path = _PROJECT_ROOT / "config"
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +67,17 @@ class IndicatorSettings(BaseModel):
     volume_sma_period: int = 20
 
 
+class StrategySettings(BaseModel):
+    name: str  # canonical snake_case identifier
+    config_path: str  # relative to CONFIG_DIR
+
+
+class BacktestSettings(BaseModel):
+    initial_capital: float = Field(default=10000.0, gt=0)
+    commission_per_trade: float = Field(default=0.0, ge=0)
+    slippage_pct: float = Field(default=0.001, ge=0)
+
+
 class AppConfig(BaseModel):
     mode: Literal["paper", "live"]
     app: AppSettings = AppSettings()
@@ -74,6 +85,8 @@ class AppConfig(BaseModel):
     data: DataSettings = DataSettings()
     alpaca: AlpacaSettings = AlpacaSettings()
     indicators: IndicatorSettings = IndicatorSettings()
+    strategies: list[StrategySettings] = Field(default_factory=list)
+    backtest: BacktestSettings = Field(default_factory=BacktestSettings)
 
     @model_validator(mode="after")
     def _check_credentials(self) -> AppConfig:
@@ -87,6 +100,14 @@ class AppConfig(BaseModel):
                 raise ValueError(
                     "live mode requires ALPACA_LIVE_API_KEY and ALPACA_LIVE_SECRET_KEY"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _unique_strategy_names(self) -> AppConfig:
+        names = [s.name for s in self.strategies]
+        if len(names) != len(set(names)):
+            dupes = {n for n in names if names.count(n) > 1}
+            raise ValueError(f"Duplicate strategy names: {dupes}")
         return self
 
 
@@ -125,7 +146,7 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
     5. Env-var secrets injected
     6. Pydantic validation
     """
-    config_dir = config_dir or _CONFIG_DIR
+    config_dir = config_dir or CONFIG_DIR
 
     # Step 1: load base
     base = _load_yaml(config_dir / "default.yaml")

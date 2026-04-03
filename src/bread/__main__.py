@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import typer
 
-from bread.core.config import load_config
+from bread.core.config import CONFIG_DIR, load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
 from bread.data.alpaca_data import AlpacaDataProvider
@@ -73,6 +75,84 @@ def fetch(symbol: str) -> None:
                 )
         finally:
             engine.dispose()
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+@app.command("backtest")
+def backtest_cmd(
+    strategy: str = typer.Option(..., "--strategy", help="Strategy name"),
+    start: str = typer.Option(..., "--start", help="Start date YYYY-MM-DD"),
+    end: str = typer.Option(..., "--end", help="End date YYYY-MM-DD"),
+) -> None:
+    """Run a backtest for a strategy over a date range."""
+    try:
+        # 1. Load config
+        config = load_config()
+
+        # 2. Initialize logging
+        setup_logging(config.app.log_level)
+
+        # 3. Auto-init DB
+        engine = get_engine(config.db.path)
+        try:
+            init_db(engine)
+        finally:
+            engine.dispose()
+
+        # 4. Match strategy name
+        strat_settings = None
+        for s in config.strategies:
+            if s.name == strategy:
+                strat_settings = s
+                break
+        if strat_settings is None:
+            available = [s.name for s in config.strategies]
+            typer.echo(f"Error: Unknown strategy '{strategy}'. Available: {available}", err=True)
+            raise SystemExit(1)
+
+        # 5. Resolve config path
+        strategy_config_path = CONFIG_DIR / strat_settings.config_path
+
+        # 6. Look up strategy class from registry
+        import bread.strategy  # noqa: F401
+        from bread.strategy.registry import get_strategy
+
+        strategy_cls = get_strategy(strategy)
+
+        # 7. Instantiate strategy
+        strat_instance = strategy_cls(strategy_config_path, config.indicators)  # type: ignore[call-arg]
+
+        # 8. Create data feed, load universe
+        from bread.backtest.data_feed import HistoricalDataFeed
+
+        provider = AlpacaDataProvider(config)
+        start_date = date.fromisoformat(start)
+        end_date = date.fromisoformat(end)
+        feed = HistoricalDataFeed(provider, config)
+        universe_data = feed.load_universe(strat_instance.universe, start_date, end_date)
+
+        # 9. Run backtest
+        from bread.backtest.engine import BacktestEngine
+
+        bt = BacktestEngine(strat_instance, config)
+        result = bt.run(universe_data, start_date, end_date)
+
+        # 10. Print metrics summary
+        m = result.metrics
+        typer.echo(f"Backtest: {strategy} | {start} to {end}")
+        typer.echo("---")
+        typer.echo(f"Total return:    {m['total_return_pct']:>8.2f}%")
+        typer.echo(f"CAGR:            {m['cagr_pct']:>8.2f}%")
+        typer.echo(f"Sharpe ratio:    {m['sharpe_ratio']:>8.2f}")
+        typer.echo(f"Sortino ratio:   {m['sortino_ratio']:>8.2f}")
+        typer.echo(f"Max drawdown:    {m['max_drawdown_pct']:>8.2f}%")
+        typer.echo(f"Win rate:        {m['win_rate_pct']:>8.2f}%")
+        typer.echo(f"Profit factor:   {m['profit_factor']:>8.2f}")
+        typer.echo(f"Total trades:    {m['total_trades']:>8d}")
+        typer.echo(f"Avg holding days:{m['avg_holding_days']:>8.2f}")
+
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
