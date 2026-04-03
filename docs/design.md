@@ -391,7 +391,7 @@ Not needed initially (single-user, localhost). Future option: `dash-auth` basic 
 | 1. Foundation | **Complete** | Scaffolding, config, database, data pipeline, indicators |
 | 2. Strategy + Backtest | **Complete** | Strategy framework, ETF momentum, backtest engine |
 | 3. Execution + Paper | **Complete** | Execution engine, risk management, orchestrator, paper trading |
-| 4. Monitoring | Pending | Trade journal, P&L tracker, alerts |
+| 4. Monitoring | **Complete** | Trade journal, P&L tracker, alerts, enhanced CLI |
 | 5. Dashboard (UI) | Pending | Dash-based web dashboard |
 | 6. Validation | Pending | 2-4 weeks paper trading, tuning |
 | 7. Go Live | Pending | Live with minimal capital, gradual scaling |
@@ -481,12 +481,43 @@ Deferred from Phase 3 to future phases:
 
 Test count: 189 unit tests (up from 102 after Phase 2).
 
+### Phase 4 Implementation Notes
+
+Completed modules:
+- `monitoring/journal.py` — `JournalEntry` frozen dataclass, `get_journal()` FIFO BUY/SELL pairing from `OrderLog`, `get_journal_summary()` with win rate, expectancy, best/worst trade
+- `monitoring/tracker.py` — `DailySummary` dataclass, `get_daily_summaries()` from `PortfolioSnapshot`, `get_period_pnl()` (daily/weekly/monthly), `get_drawdown_series()` with rolling peak
+- `monitoring/alerts.py` — `AlertManager` with apprise-based multi-channel notifications, per-type rate limiting, trade/daily-summary/risk-breach/error notification methods
+- `execution/engine.py` additions — `_reconcile_orders()` updates pending/accepted orders with fill status from broker, `get_account()` public method for encapsulation
+- `app.py` additions — Alert integration in `tick()` (trade alerts, error alerts), `_send_daily_summary()` scheduled at 4:05 PM ET via APScheduler `CronTrigger`, risk breach alerts post-tick
+- `core/config.py` additions — `AlertSettings` (enabled, urls, on_trade, on_daily_summary, on_risk_breach, on_error, rate_limit_seconds), added to `AppConfig`
+- `__main__.py` additions — `bread journal` command with table output and summary stats, enhanced `bread status` with risk status section and open orders
+- `config/default.yaml` additions — `alerts:` section with production defaults
+
+Structural decisions:
+- Trade journal is a query layer on `OrderLog`, not a new table — pairs BUY fills with subsequent SELL fills by (symbol, strategy_name) using FIFO matching
+- None `filled_price` guard — orders without fill data are skipped during journal pairing to prevent bogus entries
+- P&L rounding — `round(pnl, 2)` and `round(pnl_pct, 4)` to avoid floating-point display artifacts
+- `_aggregate_periods()` helper in tracker.py deduplicates weekly/monthly P&L aggregation logic
+- Alerts are best-effort — apprise exceptions are caught and logged, never crash the tick cycle
+- Rate limiting per alert type prevents notification spam during volatile periods
+- `get_account()` public method on `ExecutionEngine` avoids `_engine._broker` private access from `app.py`
+
+Deferred from Phase 4 to future phases:
+- Signal persistence to `signals_log` table (still deferred — order `reason` field captures signal explanation)
+- Real-time WebSocket trade fill events (deferred to dashboard phase)
+- Finnhub earnings calendar check (still no-op)
+- Weekly loss display in `bread status` (daily loss and drawdown shown; weekly requires additional query)
+
+Test count: 232 unit tests (up from 189 after Phase 3).
+
 ---
 
 ## Verification
 
-1. `pytest tests/unit/` — all pass
+1. `pytest tests/unit/` — all 232 tests pass
 2. `python -m bread backtest --strategy etf_momentum --start 2024-01-01 --end 2025-12-31` — positive Sharpe
-3. `python -m bread run --mode paper` — scheduler fires, data fetches, signals generate
+3. `python -m bread run --mode paper` — scheduler fires, data fetches, signals generate, alerts sent
 4. Alpaca paper dashboard — paper orders appear
-5. `ruff check src/` and `mypy src/` — clean
+5. `python -m bread status` — shows account, positions, risk status, open orders
+6. `python -m bread journal` — shows completed trade round-trips with P&L
+7. `ruff check src/` and `mypy src/` — clean
