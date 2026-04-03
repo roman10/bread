@@ -157,15 +157,64 @@ Shows completed round-trip trades with entry/exit prices, P&L, holding period, a
 ### Web Dashboard
 
 ```bash
+# Install dashboard dependencies (if not already installed)
+pip install -e ".[dashboard]"
+
+# Launch (default port 8050)
+python -m bread dashboard
+
+# Custom port or debug mode (auto-reload on code changes)
+python -m bread dashboard --port 8080 --debug
+```
+
+Open http://localhost:8050 in your browser. The dashboard uses a dark theme (Darkly Bootstrap) and has two pages accessible from the top navigation bar.
+
+The navbar shows a **PAPER** or **LIVE** badge indicating the trading mode, and a green **Connected** dot confirming the Alpaca API connection is healthy.
+
+#### Portfolio Page (`/`)
+
+The home page gives a real-time overview of your account:
+
+- **KPI cards** at the top — Equity, Daily P&L (with percentage), Buying Power, and Drawdown (color-coded: green < 2%, yellow 2-5%, red > 5%)
+- **Equity curve** — 90-day chart of portfolio value with green fill area
+- **Drawdown chart** — Visualizes drawdown from peak equity over time
+- **Open Positions table** — Sortable grid showing each position's symbol, quantity, entry price, current price, unrealized P&L (color-coded green/red), and market value
+- **Open Orders table** — Pending orders with symbol, side, quantity, type, status, and submission time
+
+#### Trades Page (`/trades`)
+
+The trades page shows your completed round-trip trade history with interactive filters:
+
+- **Strategy filter** — Dropdown to view trades from a specific strategy (e.g., `etf_momentum`)
+- **Symbol filter** — Text input to filter by ticker (e.g., `SPY`)
+- **Lookback slider** — Adjust the time window: 7, 30, 90, 180, or 365 days
+- **P&L period toggle** — Switch the P&L bar chart between Daily, Weekly, or Monthly aggregation
+
+Below the filters:
+
+- **KPI cards** — Total P&L, Win Rate, Expectancy (avg profit per trade), and Trade Count
+- **P&L bar chart** — Green/red bars showing profit and loss per period
+- **Trade Journal table** — Paginated grid (25 rows/page) with exit date, symbol, quantity, entry/exit prices, P&L, P&L %, holding days, strategy name, and exit reason. Sortable by any column.
+
+#### Running Alongside the Trading Bot
+
+The dashboard is read-only — it queries the database and Alpaca API but never places trades. Run it in a separate terminal alongside the trading bot:
+
+```bash
+# Terminal 1: trading bot
+python -m bread run --mode paper
+
+# Terminal 2: dashboard
 python -m bread dashboard
 ```
 
-Opens at http://localhost:8050. Two pages:
+#### Auto-Refresh
 
-- **Portfolio** (`/`) - Equity curve chart, open positions table, P&L, drawdown, buying power
-- **Trades** (`/trades`) - Full trade journal with filters, win rate, expectancy
+The dashboard refreshes automatically:
+- **Every 30 seconds** during US market hours (Mon-Fri, 9:30 AM - 4:00 PM ET)
+- **Every 5 minutes** outside market hours
 
-The dashboard auto-refreshes every 30 seconds during market hours and every 5 minutes off-hours. It is read-only and can run alongside the trading bot.
+No manual refresh needed — data updates are pushed to all charts and tables on each interval.
 
 ### Alerts
 
