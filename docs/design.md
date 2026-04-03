@@ -393,7 +393,7 @@ Not needed initially (single-user, localhost). Future option: `dash-auth` basic 
 | 3. Execution + Paper | **Complete** | Execution engine, risk management, orchestrator, paper trading |
 | 4. Monitoring | **Complete** | Trade journal, P&L tracker, alerts, enhanced CLI |
 | 5. Dashboard (UI) | Pending | Dash-based web dashboard |
-| 6. Validation | Pending | 2-4 weeks paper trading, tuning |
+| 6. Validation | **In Progress** | 2-4 weeks paper trading, tuning (started 2026-04-03) |
 | 7. Go Live | Pending | Live with minimal capital, gradual scaling |
 
 ### Phase 1 Implementation Notes
