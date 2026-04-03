@@ -34,10 +34,9 @@ _session_factory = None
 
 def tick() -> None:
     """Single tick of the trading loop."""
-    assert _engine is not None
-    assert _config is not None
-    assert _provider is not None
-    assert _session_factory is not None
+    if _engine is None or _config is None or _provider is None or _session_factory is None:
+        logger.error("tick() called before run() — module not initialized")
+        return
 
     logger.info("Tick started")
     try:
@@ -115,7 +114,8 @@ def run(mode: str) -> None:
     init_db(db_engine)
     _session_factory = get_session_factory(db_engine)
 
-    # 4. Initialize broker
+    # 4. Initialize data provider and broker
+    _provider = AlpacaDataProvider(_config)
     broker = AlpacaBroker(_config)
 
     # 5. Initialize risk manager

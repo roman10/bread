@@ -8,6 +8,16 @@ import bread.app as app_module
 
 
 class TestTick:
+    def test_tick_returns_early_when_not_initialized(self) -> None:
+        """Tick should return without error if run() was never called."""
+        # Module defaults are all None, so tick() should bail out gracefully
+        saved = app_module._engine
+        app_module._engine = None
+        try:
+            app_module.tick()  # should not raise
+        finally:
+            app_module._engine = saved
+
     @patch.object(app_module, "_engine")
     @patch.object(app_module, "_config")
     @patch.object(app_module, "_provider")

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime
 from enum import StrEnum
 
 
@@ -40,22 +40,6 @@ class OrderStatus(StrEnum):
 class OrderSide(StrEnum):
     BUY = "BUY"
     SELL = "SELL"
-
-
-@dataclass
-class Order:
-    symbol: str
-    side: OrderSide
-    qty: int
-    status: OrderStatus
-    broker_order_id: str | None = None
-    stop_loss_price: float | None = None
-    take_profit_price: float | None = None
-    filled_price: float | None = None
-    strategy_name: str = ""
-    reason: str = ""
-    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    filled_at: datetime | None = None
 
 
 @dataclass(frozen=True)
