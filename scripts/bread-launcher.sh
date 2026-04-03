@@ -106,12 +106,14 @@ _run_loop() {
         # Clean exit via our signal handler
         if [ "$shutting_down" = true ]; then
             _log "Bread stopped gracefully." >> "$log_file"
+            rm -f "$PID_FILE" "$CAFFEINATE_PID_FILE"
             exit 0
         fi
 
         # Clean exit from the process itself
         if [ "$exit_code" -eq 0 ]; then
             _log "Bread exited cleanly (exit 0)." >> "$log_file"
+            rm -f "$PID_FILE" "$CAFFEINATE_PID_FILE"
             exit 0
         fi
 

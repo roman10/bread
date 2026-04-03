@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from bread.core.config import CONFIG_DIR
 from bread.dashboard.components import format_local_dt
+from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
 from bread.db.models import OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
@@ -250,11 +251,7 @@ class DashboardData:
             )
 
         # Determine bot status
-        is_market_hours = (
-            now_et.weekday() < 5
-            and (now_et.hour > 9 or (now_et.hour == 9 and now_et.minute >= 30))
-            and now_et.hour < 16
-        )
+        is_market_hours = is_market_open(now_et)
 
         if last_tick is None:
             status, status_color = "No Data", "secondary"
