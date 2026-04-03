@@ -1,4 +1,4 @@
-# Phase 6: Go Live (Week 9+)
+# Phase 7: Go Live (Week 10+)
 
 ## Goal
 
@@ -8,16 +8,16 @@ Transition from paper trading to live trading with real money. Start with minima
 
 ## Scope
 
-### 6.1 Pre-Launch Checklist
+### 7.1 Pre-Launch Checklist
 
-- [ ] Phase 5 validation criteria all met
+- [ ] Phase 6 validation criteria all met
 - [ ] Live Alpaca account funded and API keys generated
 - [ ] `config/live.yaml` configured with live API keys and stricter risk limits
 - [ ] Alert destinations verified (Discord/email working)
 - [ ] Manual intervention procedures documented and tested
 - [ ] Emergency shutdown procedure documented (kill bot + cancel all orders in Alpaca dashboard)
 
-### 6.2 Capital Scaling Plan
+### 7.2 Capital Scaling Plan
 
 | Stage | Capital | Duration | Criteria to Advance |
 |-------|---------|----------|-------------------|
@@ -26,23 +26,24 @@ Transition from paper trading to live trading with real money. Start with minima
 | 3 | $10,000 | 4 weeks | Drawdown < 5%, Sharpe > 1.0, annualized ~20% |
 | 4 | $20,000 | Ongoing | Full target capital, ~$4K/year at 20% annual |
 
-### 6.3 Live Mode Differences
+### 7.3 Live Mode Differences
 
 - Reads `config/live.yaml` for live API keys
 - Stricter risk limits than paper defaults:
   - Max daily loss: 1% (vs 1.5% paper)
+  - Max weekly loss: 2% (vs 3% paper)
   - Max drawdown: 5% (vs 7% paper)
 - Requires typing "CONFIRM" on startup
 - All alerts set to high priority
 
-### 6.4 Daily Operations
+### 7.4 Daily Operations
 
 - Check `bread status` at market open and close
 - Review alerts throughout the day
 - Weekly review of trade journal and P&L metrics
 - Monthly backtest refresh with latest data to confirm strategy still viable
 
-### 6.5 Scaling Decision Framework
+### 7.5 Scaling Decision Framework
 
 **Advance to next capital stage when:**
 - Minimum duration met

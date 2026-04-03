@@ -1,4 +1,15 @@
 # Live trading overrides
 # Inherits all defaults; override only what differs.
+
 app:
   log_level: WARNING
+
+risk:
+  max_daily_loss_pct: 0.01      # 1% (vs 1.5% paper default)
+  max_weekly_loss_pct: 0.02     # 2% (vs 3% paper default)
+  max_drawdown_pct: 0.05        # 5% (vs 7% paper default)
+
+alerts:
+  enabled: true
+  urls:
+    - "discord://WEBHOOK_ID/WEBHOOK_TOKEN"

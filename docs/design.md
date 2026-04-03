@@ -392,7 +392,7 @@ Not needed initially (single-user, localhost). Future option: `dash-auth` basic 
 | 2. Strategy + Backtest | **Complete** | Strategy framework, ETF momentum, backtest engine |
 | 3. Execution + Paper | **Complete** | Execution engine, risk management, orchestrator, paper trading |
 | 4. Monitoring | **Complete** | Trade journal, P&L tracker, alerts, enhanced CLI |
-| 5. Dashboard (UI) | Pending | Dash-based web dashboard |
+| 5. Dashboard (UI) | **Complete** | Dash-based web dashboard (portfolio + trades pages) |
 | 6. Validation | **In Progress** | 2-4 weeks paper trading, tuning (started 2026-04-03) |
 | 7. Go Live | Pending | Live with minimal capital, gradual scaling |
 
@@ -510,14 +510,45 @@ Deferred from Phase 4 to future phases:
 
 Test count: 232 unit tests (up from 189 after Phase 3).
 
+### Phase 5 Implementation Notes
+
+Completed modules:
+- `dashboard/app.py` — Dash 3.x application factory with Bootstrap 5 dark theme (DARKLY), navbar with connection status indicator, smart refresh interval via client-side callback
+- `dashboard/data.py` — `DashboardData` unified data access layer wrapping Alpaca broker APIs and SQLite database, graceful degradation when broker unavailable
+- `dashboard/components.py` — Reusable KPI cards, currency/percentage formatters, color-coded P&L display
+- `dashboard/charts.py` — Plotly chart builders (equity curve with green fill, drawdown area chart, P&L bar chart by period)
+- `dashboard/pages/portfolio.py` — Portfolio overview page: 4 KPI cards (equity, daily P&L, buying power, drawdown), equity curve chart, drawdown chart, open positions AG Grid, open orders AG Grid
+- `dashboard/pages/trades.py` — Trade journal page: strategy/symbol/lookback filters, 4 summary KPI cards (total P&L, win rate, expectancy, trade count), P&L by period bar chart, paginated journal AG Grid with sort/filter
+- `dashboard/assets/clientside.js` — Client-side callback for smart interval timing (30s during market hours Mon-Fri 9:30-16:00 ET, 5min off-hours)
+- `__main__.py` additions — `bread dashboard --port 8050 --debug` CLI command
+
+Structural decisions:
+- Dashboard is standalone (read-only mode) — launches without trading engine, safe for monitoring
+- `DashboardData` wraps both live broker calls and DB queries behind a single interface, returns empty defaults when broker unavailable
+- Connection status dot (green "Connected" / orange "API unavailable") gives immediate visual feedback on broker connectivity
+- AG Grid for positions/orders/journal tables — sortable, filterable, paginated for large datasets
+- Smart refresh interval in JavaScript avoids unnecessary API calls during off-hours
+- Dark theme (DARKLY) chosen for finance dashboard convention and reduced eye strain during market hours
+
+Deferred from Phase 5 to future phases:
+- Backtest Explorer page (`/backtest`) — interactive candlestick charts with entry/exit markers, TradingView integration
+- Settings page (`/settings`) — config viewer/editor with Pydantic validation
+- `dash-socketio` WebSocket push for real-time trade fill events (polling-only for now)
+- `dash-tradingview` candlestick chart integration
+- Exposure breakdown pie/bar chart on Portfolio page
+- Trade detail click-through panel on Trades page
+
+Test count: 258 unit tests (up from 232 after Phase 4).
+
 ---
 
 ## Verification
 
-1. `pytest tests/unit/` — all 232 tests pass
+1. `pytest tests/unit/` — all 258 tests pass
 2. `python -m bread backtest --strategy etf_momentum --start 2024-01-01 --end 2025-12-31` — positive Sharpe
 3. `python -m bread run --mode paper` — scheduler fires, data fetches, signals generate, alerts sent
 4. Alpaca paper dashboard — paper orders appear
 5. `python -m bread status` — shows account, positions, risk status, open orders
 6. `python -m bread journal` — shows completed trade round-trips with P&L
-7. `ruff check src/` and `mypy src/` — clean
+7. `python -m bread dashboard` — Dash UI serves on `:8050`, portfolio and trades pages render
+8. `ruff check src/` and `mypy src/` — clean

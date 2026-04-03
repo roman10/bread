@@ -1,4 +1,4 @@
-# Phase 5: Validation (Week 6-8)
+# Phase 6: Validation (Week 7-9)
 
 ## Goal
 
@@ -8,13 +8,13 @@ Run the paper trading bot for 2-4 weeks under real market conditions. Identify b
 
 ## Scope
 
-### 5.1 Paper Trading Campaign
+### 6.1 Paper Trading Campaign
 
 - Run `python -m bread run --mode paper` continuously for 2-4 weeks
 - Monitor daily via alerts and `bread status`
 - Keep a manual log of observations and anomalies
 
-### 5.2 Bug Fixes and Reliability
+### 6.2 Bug Fixes and Reliability
 
 - Fix any bugs discovered during paper trading
 - Handle edge cases:
@@ -25,7 +25,7 @@ Run the paper trading bot for 2-4 weeks under real market conditions. Identify b
   - Split/dividend adjustments
 - Improve error handling and recovery
 
-### 5.3 Parameter Tuning
+### 6.3 Parameter Tuning
 
 - Compare paper trading results against backtest expectations
 - Tune strategy parameters if needed:
@@ -35,7 +35,7 @@ Run the paper trading bot for 2-4 weeks under real market conditions. Identify b
   - Time stop duration
 - Re-run backtests with tuned parameters to confirm improvement
 
-### 5.4 Operational Procedures
+### 6.4 Operational Procedures
 
 - Document startup/shutdown procedures
 - Document how to manually intervene (cancel orders, close positions)
@@ -46,7 +46,7 @@ Run the paper trading bot for 2-4 weeks under real market conditions. Identify b
 
 ## Verification Criteria
 
-All criteria must be met before moving to Phase 6 (Go Live).
+All criteria must be met before moving to Phase 7 (Go Live).
 
 ### System Reliability
 
