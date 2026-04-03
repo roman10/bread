@@ -17,6 +17,8 @@ env/
 
 # Environment variables / secrets
 .env
+config/paper.yaml
+config/live.yaml
 
 # IDE
 .vscode/

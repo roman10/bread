@@ -1,7 +1,0 @@
-# Paper trading overrides
-# Inherits all defaults; override only what differs.
-
-alerts:
-  enabled: true
-  urls:
-    - "discord://WEBHOOK_ID/WEBHOOK_TOKEN"
