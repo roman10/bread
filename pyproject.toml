@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dashboard = [
+    "dash>=3.0",
+    "dash-bootstrap-components>=1.6",
+    "dash-ag-grid>=31.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.4",

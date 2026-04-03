@@ -360,5 +360,32 @@ def journal_cmd(
         raise SystemExit(1) from exc
 
 
+@app.command("dashboard")
+def dashboard_cmd(
+    port: int = typer.Option(8050, "--port", help="Dashboard port"),
+    debug: bool = typer.Option(False, "--debug", help="Enable Dash debug mode"),
+) -> None:
+    """Launch the monitoring dashboard."""
+    try:
+        from bread.dashboard.app import create_app
+    except ImportError:
+        typer.echo(
+            "Dashboard requires extra dependencies.\n"
+            "Install with: pip install bread[dashboard]",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    try:
+        config = load_config()
+        setup_logging(config.app.log_level)
+        dash_app = create_app(config)
+        typer.echo(f"Starting dashboard at http://localhost:{port}")
+        dash_app.run(host="127.0.0.1", port=port, debug=debug)
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
 if __name__ == "__main__":
     app()
