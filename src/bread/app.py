@@ -56,9 +56,7 @@ def tick() -> None:
         prices: dict[str, float] = {}
 
         # Collect all unique symbols across strategies and batch-fetch once
-        all_symbols: list[str] = list(
-            dict.fromkeys(sym for s in _strategies for sym in s.universe)
-        )
+        all_symbols: list[str] = list(dict.fromkeys(sym for s in _strategies for sym in s.universe))
         universe_data: dict[str, pd.DataFrame] = {}
 
         with _session_factory() as session:
@@ -126,12 +124,16 @@ def tick() -> None:
                 )
                 if is_new_buy:
                     pos = positions_after[sig.symbol]
+                    reason = sig.reason
+                    review = _engine.get_last_review(sig.symbol)
+                    if review:
+                        reason = f"{sig.reason} | AI: {review.reasoning[:150]}"
                     _alert_manager.notify_trade(
                         sig.symbol,
                         "BUY",
                         pos.qty,
                         pos.entry_price,
-                        sig.reason,
+                        reason,
                     )
                 elif is_closed_sell:
                     _alert_manager.notify_trade(
@@ -265,8 +267,16 @@ def run(mode: str) -> None:
     # 5. Initialize risk manager
     risk = RiskManager(_config.risk)
 
+    # 5b. Initialize Claude AI client (optional)
+    claude_client = None
+    if _config.claude.enabled:
+        from bread.ai.client import ClaudeClient
+
+        claude_client = ClaudeClient(_config.claude, _session_factory)
+        logger.info("Claude AI signal review enabled (mode=%s)", _config.claude.review_mode)
+
     # 6. Initialize execution engine
-    _engine = ExecutionEngine(broker, risk, _config, _session_factory)
+    _engine = ExecutionEngine(broker, risk, _config, _session_factory, claude_client=claude_client)
 
     # 7. Initialize universe registry and load strategies
     import bread.strategy  # noqa: F401
@@ -274,9 +284,7 @@ def run(mode: str) -> None:
     from bread.strategy.base import load_strategy_config
     from bread.strategy.registry import get_strategy
 
-    universe_registry = UniverseRegistry(
-        _config.universe_providers, UNIVERSE_CACHE_DIR
-    )
+    universe_registry = UniverseRegistry(_config.universe_providers, UNIVERSE_CACHE_DIR)
 
     _strategies = []
     for s in _config.strategies:

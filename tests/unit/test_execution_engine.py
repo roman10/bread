@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+from bread.ai.models import SignalReview
 from bread.core.exceptions import OrderError
 from bread.core.models import Position, Signal, SignalDirection
 from bread.db.database import init_db
@@ -37,9 +38,13 @@ def _make_signal(
 
 def _make_position(symbol: str = "QQQ") -> Position:
     return Position(
-        symbol=symbol, qty=10, entry_price=100.0,
-        stop_loss_price=95.0, take_profit_price=110.0,
-        broker_order_id="test-123", strategy_name="test",
+        symbol=symbol,
+        qty=10,
+        entry_price=100.0,
+        stop_loss_price=95.0,
+        take_profit_price=110.0,
+        broker_order_id="test-123",
+        strategy_name="test",
         entry_date=date.today(),
     )
 
@@ -51,7 +56,10 @@ def _mock_account(
     last_equity: str = "9900",
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        equity=equity, buying_power=buying_power, cash=cash, last_equity=last_equity,
+        equity=equity,
+        buying_power=buying_power,
+        cash=cash,
+        last_equity=last_equity,
     )
 
 
@@ -77,6 +85,7 @@ def _make_engine(
 
     # Build a minimal config
     from bread.core.config import load_config
+
     config = load_config()
 
     engine = ExecutionEngine(mock_broker, mock_risk, config, sf)
@@ -177,7 +186,8 @@ class TestProcessSignals:
     def test_buy_rejected_no_order(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
         mock_risk.evaluate.return_value = (
-            10, ValidationResult(approved=False, rejections=["max positions exceeded"])
+            10,
+            ValidationResult(approved=False, rejections=["max positions exceeded"]),
         )
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -227,7 +237,8 @@ class TestProcessSignals:
     def test_rejected_order_logged_to_db(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, sf = _make_engine(monkeypatch)
         mock_risk.evaluate.return_value = (
-            10, ValidationResult(approved=False, rejections=["daily loss limit"])
+            10,
+            ValidationResult(approved=False, rejections=["daily loss limit"]),
         )
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -260,10 +271,16 @@ class TestPeakEquity:
     def test_returns_max_from_snapshots(self, monkeypatch) -> None:
         engine, _, _, sf = _make_engine(monkeypatch)
         with sf() as session:
-            session.add(PortfolioSnapshot(
-                timestamp_utc=datetime.now(UTC), equity=12_000.0,
-                cash=10_000.0, positions_value=2_000.0, open_positions=1, daily_pnl=100.0,
-            ))
+            session.add(
+                PortfolioSnapshot(
+                    timestamp_utc=datetime.now(UTC),
+                    equity=12_000.0,
+                    cash=10_000.0,
+                    positions_value=2_000.0,
+                    open_positions=1,
+                    daily_pnl=100.0,
+                )
+            )
             session.commit()
 
         assert engine._get_peak_equity(10_000.0) == 12_000.0
@@ -271,10 +288,16 @@ class TestPeakEquity:
     def test_returns_current_when_higher_than_db(self, monkeypatch) -> None:
         engine, _, _, sf = _make_engine(monkeypatch)
         with sf() as session:
-            session.add(PortfolioSnapshot(
-                timestamp_utc=datetime.now(UTC), equity=8_000.0,
-                cash=6_000.0, positions_value=2_000.0, open_positions=1, daily_pnl=0.0,
-            ))
+            session.add(
+                PortfolioSnapshot(
+                    timestamp_utc=datetime.now(UTC),
+                    equity=8_000.0,
+                    cash=6_000.0,
+                    positions_value=2_000.0,
+                    open_positions=1,
+                    daily_pnl=0.0,
+                )
+            )
             session.commit()
 
         assert engine._get_peak_equity(10_000.0) == 10_000.0
@@ -285,8 +308,12 @@ def _make_snapshot(
     equity: float = 10_000.0,
 ) -> PortfolioSnapshot:
     return PortfolioSnapshot(
-        timestamp_utc=timestamp, equity=equity,
-        cash=equity, positions_value=0.0, open_positions=0, daily_pnl=0.0,
+        timestamp_utc=timestamp,
+        equity=equity,
+        cash=equity,
+        positions_value=0.0,
+        open_positions=0,
+        daily_pnl=0.0,
     )
 
 
@@ -336,16 +363,32 @@ class TestDayTradeCount:
         engine, _, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="buy",
-                created_at_utc=now, filled_at_utc=now,
-            ))
-            session.add(OrderLog(
-                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
-                status="FILLED", strategy_name="test", reason="sell",
-                created_at_utc=now, filled_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="buy",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                )
+            )
+            session.add(
+                OrderLog(
+                    broker_order_id="s1",
+                    symbol="SPY",
+                    side="SELL",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="sell",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                )
+            )
             session.commit()
 
         assert engine._get_day_trade_count() == 1
@@ -354,11 +397,19 @@ class TestDayTradeCount:
         engine, _, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="buy",
-                created_at_utc=now, filled_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="buy",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                )
+            )
             session.commit()
 
         assert engine._get_day_trade_count() == 0
@@ -367,16 +418,32 @@ class TestDayTradeCount:
         engine, _, _, sf = _make_engine(monkeypatch)
         old = datetime.now(UTC) - timedelta(days=10)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="buy",
-                created_at_utc=old, filled_at_utc=old,
-            ))
-            session.add(OrderLog(
-                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
-                status="FILLED", strategy_name="test", reason="sell",
-                created_at_utc=old, filled_at_utc=old,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="buy",
+                    created_at_utc=old,
+                    filled_at_utc=old,
+                )
+            )
+            session.add(
+                OrderLog(
+                    broker_order_id="s1",
+                    symbol="SPY",
+                    side="SELL",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="sell",
+                    created_at_utc=old,
+                    filled_at_utc=old,
+                )
+            )
             session.commit()
 
         assert engine._get_day_trade_count() == 0
@@ -386,16 +453,32 @@ class TestDayTradeCount:
         now = datetime.now(UTC)
         with sf() as session:
             for sym in ("SPY", "QQQ"):
-                session.add(OrderLog(
-                    broker_order_id=f"b-{sym}", symbol=sym, side="BUY", qty=10,
-                    status="FILLED", strategy_name="test", reason="buy",
-                    created_at_utc=now, filled_at_utc=now,
-                ))
-                session.add(OrderLog(
-                    broker_order_id=f"s-{sym}", symbol=sym, side="SELL", qty=10,
-                    status="FILLED", strategy_name="test", reason="sell",
-                    created_at_utc=now, filled_at_utc=now,
-                ))
+                session.add(
+                    OrderLog(
+                        broker_order_id=f"b-{sym}",
+                        symbol=sym,
+                        side="BUY",
+                        qty=10,
+                        status="FILLED",
+                        strategy_name="test",
+                        reason="buy",
+                        created_at_utc=now,
+                        filled_at_utc=now,
+                    )
+                )
+                session.add(
+                    OrderLog(
+                        broker_order_id=f"s-{sym}",
+                        symbol=sym,
+                        side="SELL",
+                        qty=10,
+                        status="FILLED",
+                        strategy_name="test",
+                        reason="sell",
+                        created_at_utc=now,
+                        filled_at_utc=now,
+                    )
+                )
             session.commit()
 
         assert engine._get_day_trade_count() == 2
@@ -404,16 +487,32 @@ class TestDayTradeCount:
         engine, _, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="buy",
-                created_at_utc=now, filled_at_utc=None,
-            ))
-            session.add(OrderLog(
-                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
-                status="FILLED", strategy_name="test", reason="sell",
-                created_at_utc=now, filled_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="buy",
+                    created_at_utc=now,
+                    filled_at_utc=None,
+                )
+            )
+            session.add(
+                OrderLog(
+                    broker_order_id="s1",
+                    symbol="SPY",
+                    side="SELL",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="sell",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                )
+            )
             session.commit()
 
         # buy has null filled_at so it's skipped — no complete day trade
@@ -426,18 +525,27 @@ class TestReconcileOrders:
         # Insert a pending order
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-1", symbol="SPY", side="BUY", qty=10,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         # Broker says it's filled
         fill_time = now + timedelta(minutes=5)
         mock_broker.get_orders.return_value = [
             SimpleNamespace(
-                id="order-1", status="filled", filled_avg_price="502.50",
+                id="order-1",
+                status="filled",
+                filled_avg_price="502.50",
                 filled_at=fill_time,
             ),
         ]
@@ -458,16 +566,25 @@ class TestReconcileOrders:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-2", symbol="QQQ", side="BUY", qty=5,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-2",
+                    symbol="QQQ",
+                    side="BUY",
+                    qty=5,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         mock_broker.get_orders.return_value = [
             SimpleNamespace(
-                id="order-2", status="cancelled", filled_avg_price=None,
+                id="order-2",
+                status="cancelled",
+                filled_avg_price=None,
                 filled_at=None,
             ),
         ]
@@ -484,11 +601,20 @@ class TestReconcileOrders:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-3", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_price=500.0, filled_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-3",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_price=500.0,
+                    filled_at_utc=now,
+                )
+            )
             session.commit()
 
         # Should not even fetch broker orders since no pending
@@ -499,11 +625,18 @@ class TestReconcileOrders:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-4", symbol="SPY", side="BUY", qty=10,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-4",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         mock_broker.get_orders.side_effect = Exception("API down")
@@ -522,11 +655,18 @@ class TestReconcileOrders:
         now = datetime.now(UTC)
         with sf() as session:
             # Rejected orders have no broker_order_id
-            session.add(OrderLog(
-                broker_order_id=None, symbol="SPY", side="BUY", qty=10,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id=None,
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         mock_broker.get_orders.return_value = []
@@ -583,7 +723,8 @@ class TestProcessSignalsExceptionPaths:
         """When submit_bracket_order raises OrderError, next signal still processes."""
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
         mock_broker.submit_bracket_order.side_effect = [
-            OrderError("fail"), "order-abc",
+            OrderError("fail"),
+            "order-abc",
         ]
         mock_risk.evaluate.return_value = (5, ValidationResult(approved=True))
 
@@ -634,16 +775,25 @@ class TestPaperCostAdjustment:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-buy", symbol="SPY", side="BUY", qty=10,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-buy",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         mock_broker.get_orders.return_value = [
             SimpleNamespace(
-                id="order-buy", status="filled", filled_avg_price="500.00",
+                id="order-buy",
+                status="filled",
+                filled_avg_price="500.00",
                 filled_at=now,
             ),
         ]
@@ -660,16 +810,25 @@ class TestPaperCostAdjustment:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="order-sell", symbol="SPY", side="SELL", qty=10,
-                status="PENDING", strategy_name="test", reason="test",
-                created_at_utc=now,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="order-sell",
+                    symbol="SPY",
+                    side="SELL",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
             session.commit()
 
         mock_broker.get_orders.return_value = [
             SimpleNamespace(
-                id="order-sell", status="filled", filled_avg_price="510.00",
+                id="order-sell",
+                status="filled",
+                filled_avg_price="510.00",
                 filled_at=now,
             ),
         ]
@@ -690,12 +849,21 @@ class TestPaperCostAdjustment:
         raw_buy = 500.0
         adj_buy = 500.0 * 1.001  # paid more
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=raw_buy, filled_price=adj_buy,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=raw_buy,
+                    filled_price=adj_buy,
+                )
+            )
             session.commit()
 
         engine.save_snapshot()
@@ -715,12 +883,21 @@ class TestPaperCostAdjustment:
 
         # Insert a filled order (live mode should ignore cost adjustment)
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=500.0, filled_price=500.5,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=500.0,
+                    filled_price=500.5,
+                )
+            )
             session.commit()
 
         engine.save_snapshot()
@@ -741,18 +918,36 @@ class TestPaperCostAdjustment:
 
         # One BUY and one SELL, each with $1 commission
         with sf() as session:
-            session.add(OrderLog(
-                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=500.0, filled_price=500.5,
-            ))
-            session.add(OrderLog(
-                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=510.0, filled_price=509.49,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="b1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=500.0,
+                    filled_price=500.5,
+                )
+            )
+            session.add(
+                OrderLog(
+                    broker_order_id="s1",
+                    symbol="SPY",
+                    side="SELL",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=510.0,
+                    filled_price=509.49,
+                )
+            )
             session.commit()
 
         adj = engine._get_cumulative_cost_adjustment()
@@ -763,7 +958,8 @@ class TestPaperCostAdjustment:
         assert adj == pytest.approx(expected)
 
     def test_cumulative_adjustment_skips_commission_on_backfilled_orders(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ) -> None:
         """Historical orders (raw == adj from migration backfill) should not
         be charged commission, only orders with actual cost adjustment."""
@@ -773,19 +969,37 @@ class TestPaperCostAdjustment:
 
         with sf() as session:
             # Backfilled historical order (raw == adj, no adjustment applied)
-            session.add(OrderLog(
-                broker_order_id="old", symbol="SPY", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=500.0, filled_price=500.0,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="old",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=500.0,
+                    filled_price=500.0,
+                )
+            )
             # New order with cost adjustment applied
-            session.add(OrderLog(
-                broker_order_id="new", symbol="QQQ", side="BUY", qty=10,
-                status="FILLED", strategy_name="test", reason="test",
-                created_at_utc=now, filled_at_utc=now,
-                raw_filled_price=400.0, filled_price=400.4,
-            ))
+            session.add(
+                OrderLog(
+                    broker_order_id="new",
+                    symbol="QQQ",
+                    side="BUY",
+                    qty=10,
+                    status="FILLED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                    filled_at_utc=now,
+                    raw_filled_price=400.0,
+                    filled_price=400.4,
+                )
+            )
             session.commit()
 
         adj = engine._get_cumulative_cost_adjustment()
@@ -793,3 +1007,286 @@ class TestPaperCostAdjustment:
         # New: slippage drag = (400.0 - 400.4) * 10 = -4.0, commission = -1.0
         expected = (400.0 - 400.4) * 10 - 1 * 1.0
         assert adj == pytest.approx(expected)
+
+
+# ------------------------------------------------------------------
+# Claude AI review integration tests
+# ------------------------------------------------------------------
+
+
+def _make_engine_with_claude(
+    monkeypatch,
+    claude_client=None,
+    claude_enabled: bool = True,
+    review_mode: str = "advisory",
+    broker: MagicMock | None = None,
+    risk_manager: MagicMock | None = None,
+) -> tuple[ExecutionEngine, MagicMock, MagicMock, sessionmaker]:
+    """Build an engine with an optional mock Claude client."""
+    monkeypatch.setenv("ALPACA_PAPER_API_KEY", "fake")
+    monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "fake")
+
+    db_engine = create_engine("sqlite:///:memory:")
+    init_db(db_engine)
+    sf = sessionmaker(bind=db_engine)
+
+    mock_broker = broker or MagicMock()
+    mock_broker.get_account.return_value = _mock_account()
+    mock_broker.get_positions.return_value = []
+    mock_broker.get_orders.return_value = []
+
+    mock_risk = risk_manager or MagicMock()
+    mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+
+    from bread.core.config import load_config
+
+    config = load_config()
+
+    # Override claude settings
+    config = config.model_copy(
+        update={
+            "claude": config.claude.model_copy(
+                update={"enabled": claude_enabled, "review_mode": review_mode}
+            )
+        }
+    )
+
+    engine = ExecutionEngine(mock_broker, mock_risk, config, sf, claude_client=claude_client)
+    return engine, mock_broker, mock_risk, sf
+
+
+def _approved_review(**overrides: object) -> SignalReview:
+    defaults: dict[str, object] = {
+        "approved": True,
+        "confidence": 0.85,
+        "reasoning": "Looks good",
+        "risk_flags": [],
+    }
+    defaults.update(overrides)
+    return SignalReview(**defaults)  # type: ignore[arg-type]
+
+
+def _rejected_review(**overrides: object) -> SignalReview:
+    defaults: dict[str, object] = {
+        "approved": False,
+        "confidence": 0.3,
+        "reasoning": "Too risky given portfolio concentration",
+        "risk_flags": ["concentration"],
+    }
+    defaults.update(overrides)
+    return SignalReview(**defaults)  # type: ignore[arg-type]
+
+
+class TestClaudeReview:
+    def test_no_claude_client_submits_normally(self, monkeypatch) -> None:
+        """Engine with claude_client=None behaves identically to before."""
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=None,
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        mock_broker.submit_bracket_order.assert_called_once()
+
+    def test_claude_disabled_skips_review(self, monkeypatch) -> None:
+        """When claude.enabled=False, review is skipped even if client exists."""
+        mock_claude = MagicMock()
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            claude_enabled=False,
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        mock_claude.review_signals_batch.assert_not_called()
+        mock_broker.submit_bracket_order.assert_called_once()
+
+    def test_advisory_mode_submits_all(self, monkeypatch) -> None:
+        """Advisory mode logs review but submits all signals regardless."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.return_value = [_rejected_review()]
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            review_mode="advisory",
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        # Even though Claude rejected, advisory mode still submits
+        mock_broker.submit_bracket_order.assert_called_once()
+
+    def test_gating_mode_rejects_blocked_signals(self, monkeypatch) -> None:
+        """Gating mode blocks Claude-rejected signals from submission."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.return_value = [_rejected_review()]
+
+        engine, mock_broker, _, sf = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            review_mode="gating",
+        )
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        mock_broker.submit_bracket_order.assert_not_called()
+
+        # Should log a rejection order
+        with sf() as session:
+            orders = session.execute(select(OrderLog)).scalars().all()
+            rejected = [o for o in orders if o.status == "REJECTED"]
+            assert len(rejected) == 1
+            assert "claude_rejected" in rejected[0].reason
+
+    def test_gating_mode_approves_pass_through(self, monkeypatch) -> None:
+        """Gating mode allows Claude-approved signals through."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.return_value = [_approved_review()]
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            review_mode="gating",
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        mock_broker.submit_bracket_order.assert_called_once()
+
+    def test_claude_error_falls_through(self, monkeypatch) -> None:
+        """When Claude batch review raises, all signals proceed (fail-open)."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.side_effect = RuntimeError("boom")
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            review_mode="gating",
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        # Fail-open: order submitted despite Claude error
+        mock_broker.submit_bracket_order.assert_called_once()
+
+    def test_batch_receives_only_risk_approved(self, monkeypatch) -> None:
+        """Claude batch review receives only the signals that passed risk."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.return_value = [_approved_review()]
+
+        mock_risk = MagicMock()
+        call_count = 0
+
+        def risk_side_effect(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (10, ValidationResult(approved=True))
+            return (0, ValidationResult(approved=False, rejections=["max positions"]))
+
+        mock_risk.evaluate.side_effect = risk_side_effect
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            risk_manager=mock_risk,
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        # SPY has higher strength so it sorts first (processed first by risk)
+        engine.process_signals(
+            [_make_signal("SPY", strength=0.8), _make_signal("QQQ", strength=0.5)],
+            {"SPY": 500.0, "QQQ": 400.0},
+        )
+        # Claude should only receive SPY (QQQ rejected by risk)
+        signals_passed = mock_claude.review_signals_batch.call_args[0][0]
+        assert len(signals_passed) == 1
+        assert signals_passed[0].symbol == "SPY"
+
+    def test_get_last_review_returns_stored(self, monkeypatch) -> None:
+        """After processing, get_last_review returns the review for that symbol."""
+        mock_claude = MagicMock()
+        review = _approved_review(reasoning="strong momentum")
+        mock_claude.review_signals_batch.return_value = [review]
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        result = engine.get_last_review("SPY")
+        assert result is not None
+        assert result.reasoning == "strong momentum"
+        assert engine.get_last_review("QQQ") is None
+
+    def test_reviews_cleared_between_calls(self, monkeypatch) -> None:
+        """Reviews from previous process_signals don't leak."""
+        mock_claude = MagicMock()
+        mock_claude.review_signals_batch.return_value = [_approved_review()]
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        engine.process_signals(
+            [_make_signal("SPY")],
+            {"SPY": 500.0},
+        )
+        assert engine.get_last_review("SPY") is not None
+
+        # Second call with no BUY signals — reviews should be cleared
+        engine.process_signals([], {})
+        assert engine.get_last_review("SPY") is None
+
+    def test_gating_mixed_approvals(self, monkeypatch) -> None:
+        """Gating mode: approved signals submitted, rejected skipped."""
+        mock_claude = MagicMock()
+        # SPY approved, QQQ rejected (order matches strength sort)
+        mock_claude.review_signals_batch.return_value = [
+            _approved_review(),
+            _rejected_review(),
+        ]
+
+        engine, mock_broker, _, _ = _make_engine_with_claude(
+            monkeypatch,
+            claude_client=mock_claude,
+            review_mode="gating",
+        )
+        mock_broker.submit_bracket_order.return_value = "order-1"
+
+        # SPY higher strength → sorted first
+        engine.process_signals(
+            [_make_signal("SPY", strength=0.8), _make_signal("QQQ", strength=0.5)],
+            {"SPY": 500.0, "QQQ": 400.0},
+        )
+        # Only SPY should be submitted (QQQ rejected by Claude)
+        assert mock_broker.submit_bracket_order.call_count == 1
+        call_args = mock_broker.submit_bracket_order.call_args[0]
+        assert call_args[0] == "SPY"

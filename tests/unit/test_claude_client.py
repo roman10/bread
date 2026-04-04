@@ -334,6 +334,220 @@ class TestUsageLogging:
 # ------------------------------------------------------------------
 
 
+# ------------------------------------------------------------------
+# Batch signal review tests
+# ------------------------------------------------------------------
+
+
+def _batch_response(reviews: list[dict[str, object]]) -> CliResponse:
+    return _success_response(result={"reviews": reviews})
+
+
+def _review_dict(approved: bool = True, **overrides: object) -> dict[str, object]:
+    defaults: dict[str, object] = {
+        "approved": approved,
+        "confidence": 0.8,
+        "reasoning": "test reasoning",
+        "risk_flags": [],
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+class TestReviewSignalsBatch:
+    @patch("bread.ai.client.CliBackend")
+    def test_empty_list_returns_empty(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch([], _make_context())
+        assert result == []
+        mock_backend_cls.return_value.query.assert_not_called()
+
+    @patch("bread.ai.client.CliBackend")
+    def test_single_signal_delegates_to_review_signal(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _success_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch([_make_signal()], _make_context())
+
+        assert len(result) == 1
+        assert result[0].approved is True
+        # Single signal uses single schema, not batch
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["json_schema"] == SignalReview.json_schema()
+
+    @patch("bread.ai.client.CliBackend")
+    def test_multiple_signals_one_cli_call(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _batch_response(
+            [
+                _review_dict(approved=True, reasoning="good"),
+                _review_dict(approved=False, reasoning="risky"),
+                _review_dict(approved=True, reasoning="ok"),
+            ]
+        )
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ"), _make_signal("IWM")]
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch(signals, _make_context())
+
+        assert len(result) == 3
+        assert result[0].approved is True
+        assert result[1].approved is False
+        assert result[2].approved is True
+        assert mock_backend.query.call_count == 1
+
+    @patch("bread.ai.client.CliBackend")
+    def test_batch_uses_batch_schema(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _batch_response(
+            [
+                _review_dict(),
+                _review_dict(),
+            ]
+        )
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        client.review_signals_batch(signals, _make_context())
+
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["json_schema"] == SignalReview.batch_json_schema()
+
+    @patch("bread.ai.client.CliBackend")
+    def test_cli_failure_returns_defaults(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.side_effect = ClaudeTimeoutError("timeout")
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch(signals, _make_context())
+
+        assert len(result) == 2
+        assert all(r.approved is True for r in result)
+        assert all(r.confidence == 0.0 for r in result)
+
+    @patch("bread.ai.client.CliBackend")
+    def test_malformed_response_returns_defaults(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _success_response(result="not a dict")
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch(signals, _make_context())
+
+        assert len(result) == 2
+        assert all(r.approved is True for r in result)
+
+    @patch("bread.ai.client.CliBackend")
+    def test_length_mismatch_pads(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        # Return fewer reviews than signals
+        mock_backend.query.return_value = _batch_response([_review_dict(approved=False)])
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch(signals, _make_context())
+
+        assert len(result) == 2
+        assert result[0].approved is False  # original review
+        assert result[1].approved is True  # padded default
+
+    @patch("bread.ai.client.CliBackend")
+    def test_length_mismatch_truncates(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _batch_response(
+            [
+                _review_dict(),
+                _review_dict(),
+                _review_dict(),
+            ]
+        )
+
+        # 2 signals but 3 reviews — should truncate to 2
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch(signals, _make_context())
+
+        assert len(result) == 2  # truncated to match
+
+    @patch("bread.ai.client.CliBackend")
+    def test_batch_logged_as_signal_review_batch(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _batch_response(
+            [
+                _review_dict(),
+                _review_dict(),
+            ]
+        )
+
+        signals = [_make_signal("SPY"), _make_signal("QQQ")]
+        client = ClaudeClient(_config(), db_session_factory)
+        client.review_signals_batch(signals, _make_context())
+
+        with db_session_factory() as session:
+            logs = session.execute(select(ClaudeUsageLog)).scalars().all()
+            assert len(logs) == 1
+            assert logs[0].use_case == "signal_review_batch"
+
+    @patch("bread.ai.client.CliBackend")
+    def test_single_signal_failure_returns_default(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.side_effect = ClaudeTimeoutError("timeout")
+
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.review_signals_batch([_make_signal()], _make_context())
+
+        assert len(result) == 1
+        assert result[0].approved is True
+        assert result[0].confidence == 0.0
+
+
+# ------------------------------------------------------------------
+# Circuit breaker integration tests
+# ------------------------------------------------------------------
+
+
 class TestCircuitBreakerIntegration:
     @patch("bread.ai.client.CliBackend")
     def test_calls_blocked_when_circuit_open(

@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING
 
 from bread.ai.cli_backend import CliBackend
 from bread.ai.models import CliResponse, SignalReview, TradeContext
+from bread.ai.prompts import (
+    BATCH_REVIEW_SYSTEM_PROMPT,
+    REVIEW_SYSTEM_PROMPT,
+    build_batch_review_prompt,
+    build_single_review_prompt,
+)
 from bread.core.exceptions import ClaudeError, ClaudeParseError, ClaudeUnavailableError
 from bread.db.models import ClaudeUsageLog
 
@@ -19,11 +25,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_REVIEW_SYSTEM_PROMPT = (
-    "You are a risk-aware trading assistant for an automated swing trading bot. "
-    "Review the proposed trade signal and provide your assessment. "
-    "Be conservative — when in doubt, reject. Focus on risk/reward, "
-    "current market conditions, and portfolio concentration."
+_DEFAULT_REVIEW = SignalReview(
+    approved=True,
+    confidence=0.0,
+    reasoning="Claude unavailable \u2014 auto-approved",
+    risk_flags=[],
 )
 
 
@@ -89,11 +95,11 @@ class ClaudeClient:
 
     def review_signal(self, signal: Signal, context: TradeContext) -> SignalReview:
         """Ask Claude to review a trading signal. Returns approve/reject."""
-        prompt = self._build_review_prompt(signal, context)
+        prompt = build_single_review_prompt(signal, context)
         response = self._call(
             prompt=prompt,
             json_schema=SignalReview.json_schema(),
-            system_prompt=_REVIEW_SYSTEM_PROMPT,
+            system_prompt=REVIEW_SYSTEM_PROMPT,
             model=self._config.review_model,
             use_case="signal_review",
         )
@@ -103,6 +109,83 @@ class ClaudeClient:
             f"Expected structured dict, got {type(response.result).__name__}: "
             f"{str(response.result)[:200]}"
         )
+
+    def review_signals_batch(
+        self,
+        signals: list[Signal],
+        context: TradeContext,
+    ) -> list[SignalReview]:
+        """Ask Claude to review multiple trading signals in one CLI call.
+
+        Returns a list of :class:`SignalReview` objects in the same order as
+        *signals*.  On any failure, returns default approved reviews (fail-open)
+        so trading is never blocked.
+        """
+        if not signals:
+            return []
+        if len(signals) == 1:
+            try:
+                return [self.review_signal(signals[0], context)]
+            except ClaudeError:
+                logger.warning("Single signal review failed, auto-approving")
+                return [_DEFAULT_REVIEW]
+
+        prompt = build_batch_review_prompt(signals, context)
+        try:
+            response = self._call(
+                prompt=prompt,
+                json_schema=SignalReview.batch_json_schema(),
+                system_prompt=BATCH_REVIEW_SYSTEM_PROMPT,
+                model=self._config.review_model,
+                use_case="signal_review_batch",
+            )
+        except ClaudeError:
+            logger.warning(
+                "Batch signal review failed, auto-approving all %d signals",
+                len(signals),
+            )
+            return [_DEFAULT_REVIEW] * len(signals)
+
+        return self._parse_batch_reviews(response, len(signals))
+
+    def _parse_batch_reviews(
+        self,
+        response: CliResponse,
+        expected_count: int,
+    ) -> list[SignalReview]:
+        """Extract list of SignalReview from a batch response. Fail-open on errors."""
+        if not isinstance(response.result, dict):
+            logger.warning("Batch review: expected dict, got %s", type(response.result).__name__)
+            return [_DEFAULT_REVIEW] * expected_count
+
+        raw_reviews = response.result.get("reviews")
+        if not isinstance(raw_reviews, list):
+            logger.warning("Batch review: missing or invalid 'reviews' key")
+            return [_DEFAULT_REVIEW] * expected_count
+
+        reviews: list[SignalReview] = []
+        for item in raw_reviews:
+            if isinstance(item, dict):
+                try:
+                    reviews.append(SignalReview.from_dict(item))
+                except (ValueError, KeyError):
+                    logger.warning("Batch review: failed to parse item, using default")
+                    reviews.append(_DEFAULT_REVIEW)
+            else:
+                reviews.append(_DEFAULT_REVIEW)
+
+        if len(reviews) != expected_count:
+            logger.warning(
+                "Batch review: expected %d reviews, got %d — adjusting",
+                expected_count,
+                len(reviews),
+            )
+            if len(reviews) < expected_count:
+                reviews.extend([_DEFAULT_REVIEW] * (expected_count - len(reviews)))
+            else:
+                reviews = reviews[:expected_count]
+
+        return reviews
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -145,25 +228,6 @@ class ClaudeClient:
 
         self._log_usage(use_case, prompt, response)
         return response
-
-    def _build_review_prompt(self, signal: Signal, context: TradeContext) -> str:
-        positions_str = ", ".join(context.open_positions) or "none"
-        return (
-            f"Review this trading signal:\n"
-            f"Symbol: {signal.symbol}\n"
-            f"Direction: {signal.direction.value}\n"
-            f"Strength: {signal.strength:.2f}\n"
-            f"Stop Loss: {signal.stop_loss_pct:.1%}\n"
-            f"Strategy: {signal.strategy_name}\n"
-            f"Reason: {signal.reason}\n\n"
-            f"Portfolio context:\n"
-            f"Equity: ${context.equity:,.2f}\n"
-            f"Buying Power: ${context.buying_power:,.2f}\n"
-            f"Open Positions: {positions_str}\n"
-            f"Daily P&L: ${context.daily_pnl:,.2f}\n"
-            f"Weekly P&L: ${context.weekly_pnl:,.2f}\n"
-            f"Peak Equity: ${context.peak_equity:,.2f}\n"
-        )
 
     def _log_usage(
         self,

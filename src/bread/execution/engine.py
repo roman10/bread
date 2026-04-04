@@ -15,6 +15,8 @@ from bread.db.models import OrderLog, PortfolioSnapshot
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
 
+    from bread.ai.client import ClaudeClient
+    from bread.ai.models import SignalReview
     from bread.core.config import AppConfig
     from bread.core.models import Signal
     from bread.execution.alpaca_broker import AlpacaBroker
@@ -30,12 +32,15 @@ class ExecutionEngine:
         risk_manager: RiskManager,
         config: AppConfig,
         session_factory: sessionmaker[Session],
+        claude_client: ClaudeClient | None = None,
     ) -> None:
         self._broker = broker
         self._risk = risk_manager
         self._config = config
         self._session_factory = session_factory
+        self._claude = claude_client
         self._positions: dict[str, Position] = {}
+        self._last_reviews: dict[str, SignalReview] = {}
 
     def _adjust_fill_price(self, raw_price: float, side: str) -> float:
         """Apply paper trading cost model to a fill price.
@@ -78,7 +83,8 @@ class ExecutionEngine:
             if symbol not in self._positions:
                 logger.warning(
                     "Reconciliation: found untracked position %s qty=%s on broker",
-                    symbol, bp.qty,
+                    symbol,
+                    bp.qty,
                 )
                 self._positions[symbol] = Position(
                     symbol=symbol,
@@ -107,11 +113,13 @@ class ExecutionEngine:
         """Update pending/accepted orders with fill status from broker."""
         try:
             with self._session_factory() as session:
-                pending = session.execute(
-                    select(OrderLog).where(
-                        OrderLog.status.in_(["PENDING", "ACCEPTED"])
+                pending = (
+                    session.execute(
+                        select(OrderLog).where(OrderLog.status.in_(["PENDING", "ACCEPTED"]))
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
 
                 if not pending:
                     return
@@ -143,7 +151,8 @@ class ExecutionEngine:
                             # Apply paper trading cost model (slippage/spread).
                             # In live mode, _adjust_fill_price returns raw_price unchanged.
                             order.filled_price = self._adjust_fill_price(
-                                raw_price, order.side,
+                                raw_price,
+                                order.side,
                             )
                         order.filled_at_utc = broker_order.filled_at
                         if (
@@ -153,20 +162,27 @@ class ExecutionEngine:
                         ):
                             logger.info(
                                 "Order %s filled: %s %s @ %.2f (raw: %.2f)",
-                                order.broker_order_id, order.side, order.symbol,
-                                order.filled_price, order.raw_filled_price,
+                                order.broker_order_id,
+                                order.side,
+                                order.symbol,
+                                order.filled_price,
+                                order.raw_filled_price,
                             )
                         else:
                             logger.info(
                                 "Order %s filled: %s %s @ %s",
-                                order.broker_order_id, order.side, order.symbol,
+                                order.broker_order_id,
+                                order.side,
+                                order.symbol,
                                 f"{order.filled_price:.2f}" if order.filled_price else "N/A",
                             )
                     elif new_status in ("CANCELLED", "REJECTED"):
                         logger.info(
                             "Order %s %s: %s %s",
-                            order.broker_order_id, new_status.lower(),
-                            order.side, order.symbol,
+                            order.broker_order_id,
+                            new_status.lower(),
+                            order.side,
+                            order.symbol,
                         )
 
                 session.commit()
@@ -212,19 +228,26 @@ class ExecutionEngine:
                 order_id = self._broker.close_position(sig.symbol)
                 if order_id:
                     self._log_order(
-                        sig.symbol, OrderSide.SELL, self._positions[sig.symbol].qty,
-                        OrderStatus.PENDING, order_id, sig.strategy_name, sig.reason,
+                        sig.symbol,
+                        OrderSide.SELL,
+                        self._positions[sig.symbol].qty,
+                        OrderStatus.PENDING,
+                        order_id,
+                        sig.strategy_name,
+                        sig.reason,
                     )
                     del self._positions[sig.symbol]
                     logger.info("SELL %s: position closed, reason=%s", sig.symbol, sig.reason)
             except OrderError:
                 logger.exception("Failed to close position %s", sig.symbol)
 
-        # Process BUYs
+        # Process BUYs — three phases: risk approval, Claude review, order submission
         peak_equity = self._get_peak_equity(equity)
         weekly_pnl = self._get_weekly_pnl(equity)
         day_trade_count = self._get_day_trade_count()
 
+        # Phase A: Collect risk-approved signals
+        approved_buys: list[tuple[Signal, int, float]] = []
         for sig in buy_signals:
             if sig.symbol in self._positions:
                 logger.debug("BUY %s skipped — already held", sig.symbol)
@@ -253,19 +276,43 @@ class ExecutionEngine:
             if not validation.approved:
                 logger.info("BUY %s rejected: %s", sig.symbol, validation.rejections)
                 self._log_order(
-                    sig.symbol, OrderSide.BUY, shares, OrderStatus.REJECTED,
-                    None, sig.strategy_name, f"rejected: {validation.rejections}",
+                    sig.symbol,
+                    OrderSide.BUY,
+                    shares,
+                    OrderStatus.REJECTED,
+                    None,
+                    sig.strategy_name,
+                    f"rejected: {validation.rejections}",
                 )
                 continue
 
-            # Compute bracket prices
+            approved_buys.append((sig, shares, price))
+            buying_power -= shares * price  # Reserve capital for subsequent risk evals
+
+        # Phase B: Claude AI review (if enabled)
+        self._last_reviews.clear()
+        if self._claude and self._config.claude.enabled and approved_buys:
+            approved_buys = self._claude_review_batch(
+                approved_buys,
+                equity,
+                buying_power,
+                daily_pnl,
+                weekly_pnl,
+                peak_equity,
+            )
+
+        # Phase C: Submit orders
+        for sig, shares, price in approved_buys:
             stop_loss_price = price * (1 - sig.stop_loss_pct)
             take_profit_pct = sig.stop_loss_pct * self._config.execution.take_profit_ratio
             take_profit_price = price * (1 + take_profit_pct)
 
             try:
                 order_id = self._broker.submit_bracket_order(
-                    sig.symbol, shares, stop_loss_price, take_profit_price,
+                    sig.symbol,
+                    shares,
+                    stop_loss_price,
+                    take_profit_price,
                 )
             except OrderError:
                 logger.exception("Failed to submit bracket order for %s", sig.symbol)
@@ -282,16 +329,90 @@ class ExecutionEngine:
                 entry_date=date.today(),
             )
             self._log_order(
-                sig.symbol, OrderSide.BUY, shares, OrderStatus.PENDING, order_id,
-                sig.strategy_name, sig.reason,
-                stop_loss_price=stop_loss_price, take_profit_price=take_profit_price,
+                sig.symbol,
+                OrderSide.BUY,
+                shares,
+                OrderStatus.PENDING,
+                order_id,
+                sig.strategy_name,
+                sig.reason,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
             )
-            # Reduce buying power for subsequent signals
-            buying_power -= shares * price
             logger.info(
                 "BUY %s: shares=%d price=%.2f stop=%.2f tp=%.2f order=%s",
-                sig.symbol, shares, price, stop_loss_price, take_profit_price, order_id,
+                sig.symbol,
+                shares,
+                price,
+                stop_loss_price,
+                take_profit_price,
+                order_id,
             )
+
+    def _claude_review_batch(
+        self,
+        approved_buys: list[tuple[Signal, int, float]],
+        equity: float,
+        buying_power: float,
+        daily_pnl: float,
+        weekly_pnl: float,
+        peak_equity: float,
+    ) -> list[tuple[Signal, int, float]]:
+        """Filter approved buys through Claude AI review.
+
+        In advisory mode, all signals pass through (review is logged only).
+        In gating mode, rejected signals are removed.
+        On any error, returns the original list unchanged (fail-open).
+        """
+        from bread.ai.models import TradeContext
+
+        context = TradeContext(
+            equity=equity,
+            buying_power=buying_power,
+            open_positions=list(self._positions.keys()),
+            daily_pnl=daily_pnl,
+            weekly_pnl=weekly_pnl,
+            peak_equity=peak_equity,
+        )
+        signals = [sig for sig, _, _ in approved_buys]
+
+        try:
+            reviews = self._claude.review_signals_batch(signals, context)  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Claude batch review failed, proceeding without review")
+            return approved_buys
+
+        is_gating = self._config.claude.review_mode == "gating"
+        result: list[tuple[Signal, int, float]] = []
+
+        for (sig, shares, price), review in zip(approved_buys, reviews):
+            self._last_reviews[sig.symbol] = review
+            logger.info(
+                "Claude review %s: approved=%s confidence=%.2f reason=%s flags=%s",
+                sig.symbol,
+                review.approved,
+                review.confidence,
+                review.reasoning[:100],
+                review.risk_flags,
+            )
+            if is_gating and not review.approved:
+                self._log_order(
+                    sig.symbol,
+                    OrderSide.BUY,
+                    shares,
+                    OrderStatus.REJECTED,
+                    None,
+                    sig.strategy_name,
+                    f"claude_rejected: {review.reasoning[:200]}",
+                )
+                continue
+            result.append((sig, shares, price))
+
+        return result
+
+    def get_last_review(self, symbol: str) -> SignalReview | None:
+        """Return Claude's most recent review for *symbol*, if any."""
+        return self._last_reviews.get(symbol)
 
     def get_positions(self) -> list[Position]:
         """Return current tracked positions."""
@@ -322,13 +443,17 @@ class ExecutionEngine:
 
         try:
             with self._session_factory() as session:
-                filled_orders = session.execute(
-                    select(OrderLog).where(
-                        OrderLog.status == "FILLED",
-                        OrderLog.raw_filled_price.isnot(None),
-                        OrderLog.filled_price.isnot(None),
+                filled_orders = (
+                    session.execute(
+                        select(OrderLog).where(
+                            OrderLog.status == "FILLED",
+                            OrderLog.raw_filled_price.isnot(None),
+                            OrderLog.filled_price.isnot(None),
+                        )
                     )
-                ).scalars().all()
+                    .scalars()
+                    .all()
+                )
 
                 total = 0.0
                 adjusted_count = 0
@@ -444,7 +569,8 @@ class ExecutionEngine:
                 by_symbol_date.setdefault(key, set()).add(side)
 
             return sum(
-                1 for sides in by_symbol_date.values()
+                1
+                for sides in by_symbol_date.values()
                 if OrderSide.BUY in sides and OrderSide.SELL in sides
             )
         except Exception:
@@ -466,18 +592,20 @@ class ExecutionEngine:
         """Persist an order record to the database."""
         try:
             with self._session_factory() as session:
-                session.add(OrderLog(
-                    broker_order_id=broker_order_id,
-                    symbol=symbol,
-                    side=side,
-                    qty=qty,
-                    status=status,
-                    stop_loss_price=stop_loss_price,
-                    take_profit_price=take_profit_price,
-                    strategy_name=strategy_name,
-                    reason=reason,
-                    created_at_utc=datetime.now(UTC),
-                ))
+                session.add(
+                    OrderLog(
+                        broker_order_id=broker_order_id,
+                        symbol=symbol,
+                        side=side,
+                        qty=qty,
+                        status=status,
+                        stop_loss_price=stop_loss_price,
+                        take_profit_price=take_profit_price,
+                        strategy_name=strategy_name,
+                        reason=reason,
+                        created_at_utc=datetime.now(UTC),
+                    )
+                )
                 session.commit()
         except Exception:
             logger.exception("Failed to log order for %s", symbol)

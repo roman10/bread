@@ -61,6 +61,20 @@ class SignalReview:
         }
 
     @classmethod
+    def batch_json_schema(cls) -> dict[str, object]:
+        """JSON Schema for batch review (wraps array in object for CLI compatibility)."""
+        return {
+            "type": "object",
+            "properties": {
+                "reviews": {
+                    "type": "array",
+                    "items": cls.json_schema(),
+                },
+            },
+            "required": ["reviews"],
+        }
+
+    @classmethod
     def from_dict(cls, data: dict[str, object]) -> SignalReview:
         """Construct from a parsed JSON dict with defensive type coercion."""
         raw_flags = data.get("risk_flags", [])

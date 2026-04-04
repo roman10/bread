@@ -242,33 +242,61 @@ In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
 
 ## Implementation Phases
 
-### Phase 1: Foundation
+### Phase 1: Foundation — COMPLETE (ec2a98a)
 **New files (4):**
-- `src/bread/ai/__init__.py`
-- `src/bread/ai/cli_backend.py` — CliBackend subprocess wrapper with text-parse fallback
-- `src/bread/ai/client.py` — ClaudeClient with circuit breaker, signal batching, usage tracking
-- `src/bread/ai/models.py` — SignalReview, MarketResearch, TradeContext, JSON schemas
+- `src/bread/ai/__init__.py` — package with re-exports
+- `src/bread/ai/cli_backend.py` — `CliBackend` subprocess wrapper for `claude -p --output-format json`, parses JSON envelope (`result`/`structured_output`), text-parse fallback, maps exceptions (`FileNotFoundError` → `ClaudeCliNotFoundError`, `TimeoutExpired` → `ClaudeTimeoutError`)
+- `src/bread/ai/client.py` — `ClaudeClient` with `CircuitBreaker` (3-state: CLOSED→OPEN→HALF_OPEN→CLOSED), usage logging to SQLite, `review_signal()` method. `_call()` wraps every CLI invocation with circuit-breaker + logging.
+- `src/bread/ai/models.py` — `CliResponse` (parsed envelope), `TradeContext` (portfolio snapshot), `SignalReview` (approve/reject with `json_schema()` and `from_dict()` classmethods)
 
-**Modified files (3):**
-- `src/bread/core/config.py` — add `ClaudeSettings` to AppConfig (follows AlpacaSettings pattern)
-- `src/bread/db/models.py` — add `ClaudeUsageLog` table
-- `config/default.yaml` — add `claude:` section (disabled by default)
+**Modified files (4):**
+- `src/bread/core/config.py` — `ClaudeSettings` Pydantic model added to `AppConfig` (follows `AlertSettings` pattern, `enabled: false` default)
+- `src/bread/core/exceptions.py` — `ClaudeError` hierarchy: `ClaudeTimeoutError`, `ClaudeParseError`, `ClaudeUnavailableError`, `ClaudeCliNotFoundError`
+- `src/bread/db/models.py` — `ClaudeUsageLog` table (model, use_case, prompt_length, duration_ms, success, error, cost_usd, tokens)
+- `config/default.yaml` — `claude:` section (disabled by default)
 
-**Tests (2):**
-- `tests/unit/test_cli_backend.py` — mock subprocess, verify arg building, timeout, error handling
-- `tests/unit/test_claude_client.py` — circuit breaker, usage tracking
+**Tests (2) — 40 tests:**
+- `tests/unit/test_cli_backend.py` — 23 tests: arg building, structured output, error handling, JSON fallback
+- `tests/unit/test_claude_client.py` — 17 tests: circuit breaker states, signal review, usage logging, DB failure resilience
 
-### Phase 2: Signal Review (Use Case 2)
-- Modify `execution/engine.py` — add `_claude_review()` hook
-- Modify `app.py` — wire ClaudeClient into ExecutionEngine
-- Add `src/bread/ai/prompts.py` — signal review prompt + system prompt templates
-- Modify `monitoring/alerts.py` — include Claude reasoning in notifications
+**Key implementation details:**
+- CLI envelope: `--json-schema` puts structured data in `envelope["structured_output"]`, not `envelope["result"]`
+- `MarketResearch` model deferred to Phase 3, `review_signals_batch()` to Phase 2
+- `CircuitBreaker` uses `time.monotonic()` for clock-change-safe cooldown timing
+- `_log_usage()` swallows all exceptions — DB failures never block trading
+
+### Phase 2: Signal Review — COMPLETE
+**New files (2):**
+- `src/bread/ai/prompts.py` — `REVIEW_SYSTEM_PROMPT`, `BATCH_REVIEW_SYSTEM_PROMPT`, `build_single_review_prompt()`, `build_batch_review_prompt()`. Prompt templates extracted from `client.py` and centralized.
+- `tests/unit/test_prompts.py` — 7 tests: signal/context field presence, batch numbering, shared context, ordering instruction
+
+**Modified files (5):**
+- `src/bread/ai/models.py` — added `SignalReview.batch_json_schema()` classmethod (wraps array in `{"reviews": [...]}` for CLI compatibility with `CliResponse.result: dict | str`)
+- `src/bread/ai/client.py` — refactored to use `prompts.py`; added `review_signals_batch()` (batches N signals into one CLI call), `_parse_batch_reviews()`, `_DEFAULT_REVIEW` fail-open sentinel
+- `src/bread/execution/engine.py` — three-phase BUY loop (risk approval → Claude review → order submission); added `_claude_review_batch()`, `get_last_review()`, `_last_reviews` dict; constructor accepts optional `claude_client`
+- `src/bread/app.py` — initializes `ClaudeClient` when `claude.enabled`, passes to `ExecutionEngine`; enriches BUY trade alerts with Claude reasoning via `get_last_review()`
+- `tests/unit/test_claude_client.py` — 11 new batch tests: empty/single/multi signals, batch schema, fail-open on CLI failure/malformed/length mismatch, usage logging
+- `tests/unit/test_execution_engine.py` — 10 new Claude integration tests: no-client/disabled/advisory/gating modes, fail-open on error, risk-only filtering, review storage/clearing, mixed approvals
+
+**Key implementation details:**
+- Batch schema wraps array in object (`{"reviews": [...]}`) to keep `CliResponse.result` typed as `dict | str`
+- Three-phase BUY loop: Phase A collects risk-approved signals (decrements `buying_power` per approval), Phase B does one Claude batch review, Phase C submits orders
+- Advisory mode (default): logs Claude opinion, submits all orders regardless. Gating mode: blocks Claude-rejected signals, logs `REJECTED` OrderLog with reasoning
+- Fail-open everywhere: Claude errors → all signals proceed; circuit breaker open → no review; malformed response → default approved reviews
+- Single signal optimizes to `review_signal()` (existing method); 2+ signals batch into one CLI call
+- `_DEFAULT_REVIEW` is a frozen `SignalReview(approved=True, confidence=0.0)` — safe to share references
+- Alert enrichment: `app.py` appends `| AI: {reasoning[:150]}` to BUY trade notifications via `engine.get_last_review()`
+
+**Tests: 28 new (total 68 across AI module + engine integration)**
 
 ### Phase 3: Event Monitoring (Use Case 3)
 - Add `src/bread/ai/research.py` — EventMonitor with background thread + Queue
+- Add `MarketResearch` model to `models.py` (deferred from Phase 1)
+- Add `ClaudeClient.research_events()` method with `--allowedTools "WebSearch,WebFetch"`
 - Add scheduler job in `app.py` for periodic research
 - Store results in new `event_alerts` SQLite table
 - Surface flagged symbols in dashboard
+- Note: `CliBackend`, `ClaudeClient._call()`, circuit breaker, usage logging, and `prompts.py` infrastructure all available from Phases 1-2
 
 ### Phase 4: Claude Strategy (Use Case 1)
 - New `src/bread/strategy/claude_analyst.py` — `@register("claude_analyst")`
