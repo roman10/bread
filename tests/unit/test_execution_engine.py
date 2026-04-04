@@ -758,6 +758,38 @@ class TestPaperCostAdjustment:
         adj = engine._get_cumulative_cost_adjustment()
         # BUY drag: (500.0 - 500.5) * 10 = -5.0
         # SELL drag: (509.49 - 510.0) * 10 = -5.1
-        # Commission: 2 orders * $1 = -2.0
+        # Commission: 2 adjusted orders * $1 = -2.0
         expected = (500.0 - 500.5) * 10 + (509.49 - 510.0) * 10 - 2 * 1.0
+        assert adj == pytest.approx(expected)
+
+    def test_cumulative_adjustment_skips_commission_on_backfilled_orders(
+        self, monkeypatch,
+    ) -> None:
+        """Historical orders (raw == adj from migration backfill) should not
+        be charged commission, only orders with actual cost adjustment."""
+        engine, _, _, sf = _make_engine(monkeypatch)
+        engine._config.execution.paper_cost.commission_per_trade = 1.0
+        now = datetime.now(UTC)
+
+        with sf() as session:
+            # Backfilled historical order (raw == adj, no adjustment applied)
+            session.add(OrderLog(
+                broker_order_id="old", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=500.0, filled_price=500.0,
+            ))
+            # New order with cost adjustment applied
+            session.add(OrderLog(
+                broker_order_id="new", symbol="QQQ", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=400.0, filled_price=400.4,
+            ))
+            session.commit()
+
+        adj = engine._get_cumulative_cost_adjustment()
+        # Historical: slippage drag = 0, commission = 0 (skipped, raw == adj)
+        # New: slippage drag = (400.0 - 400.4) * 10 = -4.0, commission = -1.0
+        expected = (400.0 - 400.4) * 10 - 1 * 1.0
         assert adj == pytest.approx(expected)

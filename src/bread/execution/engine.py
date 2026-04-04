@@ -331,6 +331,7 @@ class ExecutionEngine:
                 ).scalars().all()
 
                 total = 0.0
+                adjusted_count = 0
                 for order in filled_orders:
                     raw = order.raw_filled_price
                     adj = order.filled_price
@@ -342,9 +343,13 @@ class ExecutionEngine:
                         total += (raw - adj) * order.qty
                     else:
                         total += (adj - raw) * order.qty
+                    # Only count commission for orders that had cost adjustment
+                    # applied (raw != adj).  Historical orders backfilled by
+                    # migration have raw == adj and should not be charged.
+                    if raw != adj:
+                        adjusted_count += 1
 
-                # Commission impact (per side, so each filled order is one side)
-                total -= len(filled_orders) * cost.commission_per_trade
+                total -= adjusted_count * cost.commission_per_trade
 
                 return total
         except Exception:

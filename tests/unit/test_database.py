@@ -9,8 +9,8 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from bread.db.database import init_db
-from bread.db.models import MarketDataCache
+from bread.db.database import init_db, migrate_db
+from bread.db.models import Base, MarketDataCache
 
 
 @pytest.fixture()
@@ -78,3 +78,70 @@ class TestMarketDataCacheCRUD:
         db_session.add_all([bar1, bar2])
         db_session.commit()
         assert db_session.query(MarketDataCache).count() == 2
+
+
+class TestMigrateDb:
+    def test_adds_raw_filled_price_column_to_existing_table(self) -> None:
+        """Simulate a pre-migration DB: create tables without raw_filled_price,
+        insert data, then run migrate_db and verify column added + backfill."""
+        eng = create_engine("sqlite:///:memory:")
+
+        # Create tables using the OLD schema (without raw_filled_price)
+        Base.metadata.create_all(eng)
+        with eng.connect() as conn:
+            raw = conn.connection
+            cur = raw.cursor()
+            # Drop the column that create_all added (simulate old schema)
+            # SQLite doesn't support DROP COLUMN before 3.35, so recreate
+            cols = [
+                r[1] for r in cur.execute("PRAGMA table_info(orders)").fetchall()
+            ]
+            assert "raw_filled_price" in cols  # sanity: create_all adds it
+
+            old_cols = [c for c in cols if c != "raw_filled_price"]
+            col_list = ", ".join(old_cols)
+            cur.execute(f"CREATE TABLE orders_old AS SELECT {col_list} FROM orders")
+            cur.execute("DROP TABLE orders")
+            cur.execute("ALTER TABLE orders_old RENAME TO orders")
+            raw.commit()
+
+            # Verify column is gone
+            cols_after = {
+                r[1] for r in cur.execute("PRAGMA table_info(orders)").fetchall()
+            }
+            assert "raw_filled_price" not in cols_after
+
+            # Insert a filled order (old schema)
+            cur.execute(
+                "INSERT INTO orders"
+                " (symbol, side, qty, status, filled_price, strategy_name,"
+                "  reason, created_at_utc)"
+                " VALUES ('SPY', 'BUY', 10, 'FILLED', 500.0, 'test',"
+                "  'test', '2026-01-01')"
+            )
+            raw.commit()
+
+        # Run migration
+        migrate_db(eng)
+
+        # Verify column exists and backfill worked
+        with eng.connect() as conn:
+            raw = conn.connection
+            cur = raw.cursor()
+            cols_final = {
+                r[1] for r in cur.execute("PRAGMA table_info(orders)").fetchall()
+            }
+            assert "raw_filled_price" in cols_final
+
+            row = cur.execute(
+                "SELECT raw_filled_price, filled_price FROM orders"
+            ).fetchone()
+            assert row[0] == 500.0  # backfilled from filled_price
+            assert row[1] == 500.0
+
+    def test_migration_is_idempotent(self) -> None:
+        """Running migrate_db twice should not error."""
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+        migrate_db(eng)  # first run (column already exists from create_all)
+        migrate_db(eng)  # second run — should be a no-op
