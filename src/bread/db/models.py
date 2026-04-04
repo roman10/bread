@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -89,4 +89,26 @@ class PortfolioSnapshot(Base):
 
     __table_args__ = (
         Index("ix_snapshots_ts", "timestamp_utc"),
+    )
+
+
+class ClaudeUsageLog(Base):
+    __tablename__ = "claude_usage_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    called_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    use_case: Mapped[str] = mapped_column(String, nullable=False)
+    prompt_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    error: Mapped[str | None] = mapped_column(String, nullable=True)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_claude_usage_called_at", "called_at_utc"),
     )

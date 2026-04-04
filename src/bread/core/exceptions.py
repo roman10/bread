@@ -59,3 +59,23 @@ class RiskError(BreadError):
 
 class OrderError(ExecutionError):
     """Order submission or tracking error."""
+
+
+class ClaudeError(BreadError):
+    """Base for Claude AI integration errors."""
+
+
+class ClaudeTimeoutError(ClaudeError):
+    """CLI call exceeded timeout."""
+
+
+class ClaudeParseError(ClaudeError):
+    """Failed to parse CLI response."""
+
+
+class ClaudeUnavailableError(ClaudeError):
+    """Circuit breaker is open — Claude temporarily disabled."""
+
+
+class ClaudeCliNotFoundError(ClaudeError):
+    """Claude CLI binary not found on PATH."""

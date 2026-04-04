@@ -142,6 +142,21 @@ class AlertSettings(BaseModel):
     rate_limit_seconds: int = Field(default=60, ge=0)
 
 
+class ClaudeSettings(BaseModel):
+    enabled: bool = False
+    cli_path: str = "claude"
+    default_model: str = "sonnet"
+    review_model: str = "sonnet"
+    research_model: str = "sonnet"
+    timeout_seconds: int = Field(default=60, ge=10, le=300)
+    max_turns: int = Field(default=3, ge=1, le=10)
+    review_mode: Literal["advisory", "gating"] = "advisory"
+    research_enabled: bool = False
+    research_interval_hours: int = Field(default=4, ge=1, le=24)
+    circuit_breaker_max_failures: int = Field(default=3, ge=1)
+    circuit_breaker_cooldown_seconds: int = Field(default=300, ge=60)
+
+
 class AppConfig(BaseModel):
     mode: Literal["paper", "live"]
     app: AppSettings = AppSettings()
@@ -154,6 +169,7 @@ class AppConfig(BaseModel):
     risk: RiskSettings = Field(default_factory=RiskSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     alerts: AlertSettings = Field(default_factory=AlertSettings)
+    claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
     universe_providers: dict[str, UniverseProviderSpec] = Field(default_factory=dict)
     asset_class_mapping: dict[str, str] = Field(
         default_factory=lambda: {

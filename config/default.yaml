@@ -107,3 +107,17 @@ alerts:
   on_risk_breach: true
   on_error: true
   rate_limit_seconds: 60
+
+claude:
+  enabled: false
+  cli_path: "claude"
+  default_model: "sonnet"
+  review_model: "sonnet"
+  research_model: "sonnet"
+  timeout_seconds: 60
+  max_turns: 3
+  review_mode: "advisory"
+  research_enabled: false
+  research_interval_hours: 4
+  circuit_breaker_max_failures: 3
+  circuit_breaker_cooldown_seconds: 300
