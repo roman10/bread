@@ -87,7 +87,7 @@ APScheduler IntervalTrigger (every 4 hours, market hours only):
 |------|----------|-------|--------|--------|
 | 1 | **Signal review before execution** | HIGH | LOW | ✅ Phase 2 |
 | 2 | **Event monitoring + web search** | HIGH | MEDIUM | ✅ Phase 3 |
-| 3 | **Claude-powered strategy** | MEDIUM | MEDIUM | ⬜ Phase 4 |
+| 3 | **Claude-powered strategy** | MEDIUM | MEDIUM | ✅ Phase 4 |
 | 4 | **Trade narrative / journaling** | LOW | LOW | ⬜ Deferred |
 | 5 | **Market regime detection** | MEDIUM | HIGH | ⬜ Deferred |
 
@@ -246,7 +246,7 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 
 4. **`monitoring/alerts.py`** — `notify_event_alert()` for high-severity events, `notify_trade()` enriched with AI reasoning. ✅ Done (Phase 2+3)
 
-5. **`strategy/claude_analyst.py`** — New `@register("claude_analyst")` strategy. ⬜ Phase 4
+5. **`strategy/claude_analyst.py`** — New `@register("claude_analyst")` strategy. `app.py` uses `inspect.signature` to auto-detect and pass `claude_client`. ✅ Done (Phase 4)
 
 ---
 
@@ -327,13 +327,41 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 
 **Tests: 31 new (total ~100 across AI module + engine integration)**
 
-### Phase 3b: Dashboard Event Display (deferred)
-- Add event alerts table to `dashboard/pages/portfolio.py`
-- Add `get_recent_events()` to `dashboard/data.py`
+### Phase 3b: Dashboard Event Display — COMPLETE (5aa86f4)
+**Modified files (2):**
+- `src/bread/dashboard/data.py` — Added `get_recent_events()` method querying `EventAlertLog` with 48h window, formatted for AG Grid display
+- `src/bread/dashboard/pages/portfolio.py` — Added event alerts AG Grid table with severity color-coding (HIGH=red, MEDIUM=amber, LOW=gray), headline tooltips showing details on hover, auto-refresh callback
 
-### Phase 4: Claude Strategy (Use Case 1)
-- New `src/bread/strategy/claude_analyst.py` — `@register("claude_analyst")`
-- New `config/strategies/claude_analyst.yaml`
+**Key implementation details:**
+- No `is_active` filter — shows all recent events for visibility (active/inactive is a backend concern for signal review enrichment)
+- Pagination at 10 rows per page (events are less frequent than signals)
+- Placed at bottom of portfolio page — dashboard flows from actionable (KPIs, positions) to contextual (signals, events)
+
+### Phase 4: Claude Strategy — COMPLETE (cd37cd0)
+**New files (3):**
+- `src/bread/strategy/claude_analyst.py` — `@register("claude_analyst")` strategy: compresses enriched DataFrames into compact text summaries (price returns, RSI, SMAs, EMAs, MACD, Bollinger Bands, ATR, volume), sends one batched Claude CLI call per tick, converts structured BUY/SELL/HOLD recommendations into Signal objects. ATR-based stop loss (deterministic). Fail-safe: returns no signals on any Claude error.
+- `config/strategies/claude_analyst.yaml` — Universe (SPY, QQQ, IWM, DIA, XLF, XLK), ATR stop mult 1.5, time stop 15 days
+- `tests/unit/test_claude_analyst.py` — 15 tests: construction, summary generation, evaluate happy path/errors/edge cases
+
+**Modified files (8):**
+- `src/bread/ai/models.py` — Added `StrategyRecommendation` (frozen, action validation, `from_dict()` with clamping) and `StrategyAnalysis` (frozen, `json_schema()`, `from_dict()` skips malformed recs)
+- `src/bread/ai/client.py` — Added `analyze_technicals()` method using `STRATEGY_SYSTEM_PROMPT`, `strategy_model`, and `StrategyAnalysis` schema
+- `src/bread/ai/prompts.py` — Added `STRATEGY_SYSTEM_PROMPT` constant for technical analysis role
+- `src/bread/ai/__init__.py` — Exports `StrategyRecommendation`, `StrategyAnalysis`
+- `src/bread/core/config.py` — Added `strategy_model: str = "sonnet"` to `ClaudeSettings`
+- `config/default.yaml` — Added `strategy_model: "sonnet"` to claude section; added `claude_analyst` strategy entry (disabled by default, paper-only)
+- `src/bread/app.py` — Uses `inspect.signature` to auto-detect strategies that accept `claude_client` kwarg and passes it. Skips with warning if Claude is disabled.
+- `tests/unit/test_claude_client.py` — 5 new tests: `analyze_technicals()` success, model selection, schema, parse error, usage logging
+
+**Key implementation details:**
+- One CLI call per tick, all symbols batched (~3500 input tokens for 10 symbols)
+- Column names derived from `indicator_settings` (resilient to config changes)
+- SELL signals always get `strength=1.0`; BUY uses Claude's recommendation
+- `inspect.signature`-based dependency injection — no magic class attributes, constructor IS the spec
+- Pure technical analysis — no event enrichment (events already injected during signal review in Phase 2+3)
+- Shared circuit breaker across strategy analysis, signal review, and research
+
+**Tests: 20 new (total 596 across full unit suite)**
 
 ### Phase 5 (optional): mcode MCP Integration
 - Add `src/bread/ai/mcode_backend.py` — HTTP client for mcode MCP
@@ -344,13 +372,14 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 
 ## Verification Plan
 
-1. **Unit tests** (576 passing): `pytest tests/unit/`
+1. **Unit tests** (596 passing): `pytest tests/unit/`
    - `test_cli_backend.py` — 23 tests: arg building, structured output, error handling, JSON fallback
-   - `test_claude_client.py` — 32 tests: circuit breaker, signal review, batch review, research events, usage logging
+   - `test_claude_client.py` — 37 tests: circuit breaker, signal review, batch review, research events, strategy analysis, usage logging
    - `test_prompts.py` — 16 tests: review prompts, batch prompts, research prompts, event context formatting
    - `test_research.py` — 15 tests: symbol collection, DB storage, staleness, alerts, fail-open
    - `test_market_research_models.py` — 13 tests: EventAlert/MarketResearch dataclasses, schemas, validation
    - `test_execution_engine.py` — 10 tests: advisory/gating modes, fail-open, review storage, mixed approvals
+   - `test_claude_analyst.py` — 15 tests: construction, summary generation, evaluate happy path/errors/edge cases
 
 2. **Type check**: `mypy src/` — strict mode, no errors
 
@@ -366,6 +395,9 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
    - Verify trading continues normally when Claude is disabled or errors
    - Verify `claude_usage_log` table records all calls (review + research)
    - Check that total tick time stays under 15 minutes
+   - Verify `claude_analyst` strategy emits signals during tick cycle when enabled
+   - Verify `claude_analyst` is skipped with warning when `claude.enabled: false`
+   - Verify `strategy_analysis` entries appear in `claude_usage_log`
 
 ---
 
@@ -377,4 +409,4 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 - Backtesting with Claude (non-deterministic, expensive in time)
 - Auto-parameter tuning (premature optimization)
 - Event deduplication across research scans (same event stored per scan; acceptable for now)
-- Dashboard event display (deferred to Phase 3b)
+- ~~Dashboard event display (deferred to Phase 3b)~~ — Done
