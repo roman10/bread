@@ -1,5 +1,31 @@
 mode: paper
 
+universe_providers:
+  default_etfs:
+    type: predefined
+    symbols: [SPY, QQQ, IWM, DIA, XLF, XLK, XLE, XLV, GLD, TLT]
+  sp500:
+    type: index
+    index: sp500
+    ttl_days: 7
+  nasdaq100:
+    type: index
+    index: nasdaq100
+    ttl_days: 7
+
+asset_class_mapping:
+  "Information Technology": technology
+  "Health Care": healthcare
+  "Financials": financials
+  "Consumer Discretionary": consumer_discretionary
+  "Communication Services": communication
+  "Industrials": industrials
+  "Consumer Staples": consumer_staples
+  "Energy": energy
+  "Utilities": utilities
+  "Real Estate": real_estate
+  "Materials": materials
+
 app:
   log_level: INFO
   timezone: "America/New_York"

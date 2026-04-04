@@ -66,10 +66,27 @@ class TestCheckAssetClassExposure:
         assert passed is False
         assert "equity_broad" in reason
 
-    def test_unknown_class_passes(self) -> None:
-        # Symbol not in any class -> no constraint
+    def test_unclassified_within_limit(self) -> None:
+        # Single unclassified symbol under 40% limit passes
         passed, _ = check_asset_class_exposure(
             "AAPL", [], 2_000, 10_000, ASSET_CLASSES, 0.40
+        )
+        assert passed is True
+
+    def test_unclassified_exceeds_limit(self) -> None:
+        # Multiple unclassified symbols exceeding limit are rejected
+        positions = [("AAPL", 2_000), ("MSFT", 2_000)]
+        passed, reason = check_asset_class_exposure(
+            "GOOG", positions, 1_000, 10_000, ASSET_CLASSES, 0.40
+        )
+        assert passed is False
+        assert "unclassified" in reason
+
+    def test_mix_classified_unclassified(self) -> None:
+        # Classified positions don't count toward unclassified bucket
+        positions = [("SPY", 3_000)]  # SPY is equity_broad, not unclassified
+        passed, _ = check_asset_class_exposure(
+            "AAPL", positions, 2_000, 10_000, ASSET_CLASSES, 0.40
         )
         assert passed is True
 

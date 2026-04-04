@@ -212,6 +212,26 @@ def _send_daily_summary() -> None:
         logger.exception("Failed to send daily summary")
 
 
+def _merge_provider_asset_classes(config: AppConfig, registry: object) -> None:
+    """Enrich config.risk.asset_classes with provider-sourced sector data."""
+    from bread.data.universe import UniverseRegistry
+
+    if not isinstance(registry, UniverseRegistry):
+        return
+    classified = {sym for members in config.risk.asset_classes.values() for sym in members}
+    added = 0
+    for provider in registry.all_providers():
+        for sym, gics_sector in provider.get_asset_class_map().items():
+            if sym in classified:
+                continue
+            asset_class = config.asset_class_mapping.get(gics_sector, "unclassified")
+            config.risk.asset_classes.setdefault(asset_class, []).append(sym)
+            classified.add(sym)
+            added += 1
+    if added:
+        logger.info("Auto-classified %d symbols into asset classes", added)
+
+
 def run(mode: str) -> None:
     """Start the trading bot."""
     global _engine, _scheduler, _strategies, _provider, _config, _session_factory
@@ -248,9 +268,15 @@ def run(mode: str) -> None:
     # 6. Initialize execution engine
     _engine = ExecutionEngine(broker, risk, _config, _session_factory)
 
-    # 7. Load strategies
+    # 7. Initialize universe registry and load strategies
     import bread.strategy  # noqa: F401
+    from bread.data.universe import UniverseRegistry
+    from bread.strategy.base import load_strategy_config
     from bread.strategy.registry import get_strategy
+
+    universe_registry = UniverseRegistry(
+        _config.universe_providers, CONFIG_DIR.parent / "data" / "universe_cache"
+    )
 
     _strategies = []
     for s in _config.strategies:
@@ -262,10 +288,25 @@ def run(mode: str) -> None:
             continue
         cls = get_strategy(s.name)
         cfg_path = s.config_path or f"strategies/{s.name}.yaml"
-        inst = cls(CONFIG_DIR / cfg_path, _config.indicators)  # type: ignore[call-arg]
+
+        # Resolve universe provider references (string -> symbol list)
+        resolved_universe = None
+        strat_cfg = load_strategy_config(CONFIG_DIR / cfg_path)
+        raw_universe = strat_cfg.get("universe", [])
+        if isinstance(raw_universe, str):
+            resolved_universe = universe_registry.get(raw_universe).get_symbols()
+            logger.info(
+                "Strategy %s: resolved universe '%s' -> %d symbols",
+                s.name, raw_universe, len(resolved_universe),
+            )
+
+        inst = cls(CONFIG_DIR / cfg_path, _config.indicators, universe=resolved_universe)  # type: ignore[call-arg]
         _strategies.append(inst)
 
     logger.info("Loaded %d strategies: %s", len(_strategies), [s.name for s in _strategies])
+
+    # 7b. Auto-classify symbols into asset classes from provider data
+    _merge_provider_asset_classes(_config, universe_registry)
 
     # 8. Initialize alert manager
     _alert_manager = AlertManager(_config.alerts)

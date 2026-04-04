@@ -121,12 +121,26 @@ def backtest_cmd(
 
         # 6. Look up strategy class from registry
         import bread.strategy  # noqa: F401
+        from bread.strategy.base import load_strategy_config
         from bread.strategy.registry import get_strategy
 
         strategy_cls = get_strategy(strategy)
 
-        # 7. Instantiate strategy
-        strat_instance = strategy_cls(strategy_config_path, config.indicators)  # type: ignore[call-arg]
+        # 7. Resolve universe provider references and instantiate strategy
+        from bread.data.universe import UniverseRegistry
+
+        universe_registry = UniverseRegistry(
+            config.universe_providers, CONFIG_DIR.parent / "data" / "universe_cache"
+        )
+        resolved_universe = None
+        strat_cfg = load_strategy_config(strategy_config_path)
+        raw_universe = strat_cfg.get("universe", [])
+        if isinstance(raw_universe, str):
+            resolved_universe = universe_registry.get(raw_universe).get_symbols()
+
+        strat_instance = strategy_cls(  # type: ignore[call-arg]
+            strategy_config_path, config.indicators, universe=resolved_universe,
+        )
 
         # 8. Create data feed, load universe
         from bread.backtest.data_feed import HistoricalDataFeed

@@ -49,8 +49,19 @@ def check_asset_class_exposure(
         if symbol in members
     ]
 
-    # If symbol not in any class, no concentration constraint
+    # Unmapped symbols share an implicit "unclassified" bucket so they
+    # cannot accumulate unlimited exposure.
     if not symbol_classes:
+        symbol_classes = ["unclassified"]
+        classified = {sym for members in asset_classes.values() for sym in members}
+        existing_value = sum(val for sym, val in positions if sym not in classified)
+        total = existing_value + proposed_value
+        ratio = total / equity
+        if ratio > max_asset_class_pct:
+            return False, (
+                f"asset class 'unclassified' exposure {ratio:.1%} "
+                f"exceeds limit {max_asset_class_pct:.0%}"
+            )
         return True, ""
 
     for cls_name in symbol_classes:

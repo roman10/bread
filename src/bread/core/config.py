@@ -84,6 +84,13 @@ class IndicatorSettings(BaseModel):
         return max(candidates)
 
 
+class UniverseProviderSpec(BaseModel):
+    type: Literal["predefined", "index"]
+    symbols: list[str] = Field(default_factory=list)  # predefined only
+    index: str | None = None  # index type: "sp500" or "nasdaq100"
+    ttl_days: int = Field(default=7, ge=1)
+
+
 class StrategySettings(BaseModel):
     name: str  # canonical snake_case identifier
     config_path: str | None = None  # relative to CONFIG_DIR; defaults to strategies/{name}.yaml
@@ -147,6 +154,22 @@ class AppConfig(BaseModel):
     risk: RiskSettings = Field(default_factory=RiskSettings)
     execution: ExecutionSettings = Field(default_factory=ExecutionSettings)
     alerts: AlertSettings = Field(default_factory=AlertSettings)
+    universe_providers: dict[str, UniverseProviderSpec] = Field(default_factory=dict)
+    asset_class_mapping: dict[str, str] = Field(
+        default_factory=lambda: {
+            "Information Technology": "technology",
+            "Health Care": "healthcare",
+            "Financials": "financials",
+            "Consumer Discretionary": "consumer_discretionary",
+            "Communication Services": "communication",
+            "Industrials": "industrials",
+            "Consumer Staples": "consumer_staples",
+            "Energy": "energy",
+            "Utilities": "utilities",
+            "Real Estate": "real_estate",
+            "Materials": "materials",
+        }
+    )
 
     @model_validator(mode="after")
     def _check_credentials(self) -> AppConfig:

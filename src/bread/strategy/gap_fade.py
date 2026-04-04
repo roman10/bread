@@ -19,11 +19,14 @@ logger = logging.getLogger(__name__)
 
 @register("gap_fade")
 class GapFade(Strategy):
-    def __init__(self, config_path: Path, indicator_settings: IndicatorSettings) -> None:
+    def __init__(
+        self, config_path: Path, indicator_settings: IndicatorSettings,
+        *, universe: list[str] | None = None,
+    ) -> None:
         """Load strategy-specific config from YAML."""
         cfg = load_strategy_config(config_path)
 
-        self._universe: list[str] = cfg.get("universe", [])
+        self._universe: list[str] = universe if universe is not None else cfg.get("universe", [])
         entry = cfg.get("entry", {})
         exit_ = cfg.get("exit", {})
 
