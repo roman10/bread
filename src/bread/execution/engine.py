@@ -376,8 +376,18 @@ class ExecutionEngine:
         )
         signals = [sig for sig, _, _ in approved_buys]
 
+        # Enrich review with recent event alerts (fail-open)
+        event_alerts = None
         try:
-            reviews = self._claude.review_signals_batch(signals, context)  # type: ignore[union-attr]
+            from bread.ai.research import get_active_alerts
+
+            signal_symbols = [sig.symbol for sig in signals]
+            event_alerts = get_active_alerts(self._session_factory, signal_symbols) or None
+        except Exception:
+            logger.debug("Could not fetch event alerts for review enrichment")
+
+        try:
+            reviews = self._claude.review_signals_batch(signals, context, event_alerts=event_alerts)  # type: ignore[union-attr]
         except Exception:
             logger.exception("Claude batch review failed, proceeding without review")
             return approved_buys

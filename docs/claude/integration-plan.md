@@ -289,14 +289,37 @@ In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
 
 **Tests: 28 new (total 68 across AI module + engine integration)**
 
-### Phase 3: Event Monitoring (Use Case 3)
-- Add `src/bread/ai/research.py` — EventMonitor with background thread + Queue
-- Add `MarketResearch` model to `models.py` (deferred from Phase 1)
-- Add `ClaudeClient.research_events()` method with `--allowedTools "WebSearch,WebFetch"`
-- Add scheduler job in `app.py` for periodic research
-- Store results in new `event_alerts` SQLite table
-- Surface flagged symbols in dashboard
-- Note: `CliBackend`, `ClaudeClient._call()`, circuit breaker, usage logging, and `prompts.py` infrastructure all available from Phases 1-2
+### Phase 3: Event Monitoring — COMPLETE
+**New files (3):**
+- `src/bread/ai/research.py` — `run_research_scan()` orchestrator (APScheduler job, not background thread), `collect_research_symbols()` (30-symbol cap, held first), `get_active_alerts()` (DB query for active high/medium events, fail-open). Private helpers: `_store_results()`, `_deactivate_stale_alerts()` (48h), `_send_high_severity_alerts()`
+- `tests/unit/test_research.py` — 14 tests: symbol collection, DB storage, staleness, alerts, fail-open
+- `tests/unit/test_market_research_models.py` — 13 tests: EventAlert/MarketResearch from_dict, schema, validation
+
+**Modified files (9):**
+- `src/bread/ai/models.py` — Added `EventAlert` (frozen, severity validation, `from_dict()`) and `MarketResearch` (frozen, `json_schema()`, `from_dict()` with defensive parsing)
+- `src/bread/ai/client.py` — Added `research_events()` method using `WebSearch`/`WebFetch` tools, research_model, max_turns=8, timeout=120. Added `event_alerts` parameter to `review_signal()` and `review_signals_batch()` for enrichment
+- `src/bread/ai/prompts.py` — Added `RESEARCH_SYSTEM_PROMPT`, `build_research_prompt()`, `format_event_context()`. Modified `build_single_review_prompt()` and `build_batch_review_prompt()` to accept optional `event_alerts` parameter
+- `src/bread/ai/__init__.py` — Exports `EventAlert`, `MarketResearch`
+- `src/bread/db/models.py` — Added `EventAlertLog` table (symbol, severity, headline, details, event_type, source, scan_summary, is_active, scanned_at_utc) with indexes
+- `src/bread/core/config.py` — Added `on_research: bool = True` to `AlertSettings`
+- `config/default.yaml` — Added `on_research: true` to alerts section
+- `src/bread/monitoring/alerts.py` — Added `notify_event_alert()` method (WARNING-level, gated by `on_research`)
+- `src/bread/execution/engine.py` — `_claude_review_batch()` now queries `get_active_alerts()` and passes event context to review prompts
+- `src/bread/app.py` — Added `event_research` scheduler job (`IntervalTrigger`, market-hours guard, collects symbols from engine + strategies)
+
+**Key implementation details:**
+- Scheduled function via APScheduler (not background thread) — matches existing `tick()` pattern
+- DB as communication channel between research and tick loop — no shared mutable state
+- Fail-open everywhere: `run_research_scan()` swallows all exceptions, `get_active_alerts()` returns `[]` on error
+- Shared circuit breaker for research + review calls
+- Signal review enrichment closes the value loop: research → store → enrich reviews → better decisions
+- Dashboard event display deferred to Phase 3b
+
+**Tests: 31 new (total ~100 across AI module + engine integration)**
+
+### Phase 3b: Dashboard Event Display (deferred)
+- Add event alerts table to `dashboard/pages/portfolio.py`
+- Add `get_recent_events()` to `dashboard/data.py`
 
 ### Phase 4: Claude Strategy (Use Case 1)
 - New `src/bread/strategy/claude_analyst.py` — `@register("claude_analyst")`

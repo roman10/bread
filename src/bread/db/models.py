@@ -113,3 +113,25 @@ class ClaudeUsageLog(Base):
     __table_args__ = (
         Index("ix_claude_usage_called_at", "called_at_utc"),
     )
+
+
+class EventAlertLog(Base):
+    __tablename__ = "event_alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    headline: Mapped[str] = mapped_column(String, nullable=False)
+    details: Mapped[str] = mapped_column(String, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False, default="")
+    scan_summary: Mapped[str] = mapped_column(String, nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    scanned_at_utc: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_event_alerts_symbol_scanned", "symbol", "scanned_at_utc"),
+        Index("ix_event_alerts_active", "is_active", "scanned_at_utc"),
+    )

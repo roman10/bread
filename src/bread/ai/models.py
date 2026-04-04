@@ -85,3 +85,116 @@ class SignalReview:
             reasoning=str(data.get("reasoning", "")),
             risk_flags=flags,
         )
+
+
+_VALID_SEVERITIES = frozenset({"high", "medium", "low", "none"})
+_VALID_EVENT_TYPES = frozenset(
+    {"earnings", "fda", "analyst", "macro", "sector", "other"}
+)
+
+
+@dataclass(frozen=True)
+class EventAlert:
+    """A single market-moving event detected by a research scan."""
+
+    symbol: str
+    severity: str  # "high" | "medium" | "low" | "none"
+    headline: str
+    details: str
+    event_type: str  # "earnings" | "fda" | "analyst" | "macro" | "sector" | "other"
+    source: str
+
+    def __post_init__(self) -> None:
+        if self.severity not in _VALID_SEVERITIES:
+            raise ValueError(
+                f"severity must be one of {sorted(_VALID_SEVERITIES)}, got {self.severity!r}"
+            )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> EventAlert:
+        """Construct from parsed JSON with defensive type coercion."""
+        severity = str(data.get("severity", "none"))
+        if severity not in _VALID_SEVERITIES:
+            severity = "none"
+        event_type = str(data.get("event_type", "other"))
+        if event_type not in _VALID_EVENT_TYPES:
+            event_type = "other"
+        return cls(
+            symbol=str(data.get("symbol", "")),
+            severity=severity,
+            headline=str(data.get("headline", "")),
+            details=str(data.get("details", "")),
+            event_type=event_type,
+            source=str(data.get("source", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MarketResearch:
+    """Claude's structured research response for event monitoring."""
+
+    events: list[EventAlert]
+    scan_summary: str
+
+    @classmethod
+    def json_schema(cls) -> dict[str, object]:
+        """JSON Schema for the --json-schema CLI flag."""
+        return {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string"},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low", "none"],
+                            },
+                            "headline": {"type": "string"},
+                            "details": {"type": "string"},
+                            "event_type": {
+                                "type": "string",
+                                "enum": [
+                                    "earnings",
+                                    "fda",
+                                    "analyst",
+                                    "macro",
+                                    "sector",
+                                    "other",
+                                ],
+                            },
+                            "source": {"type": "string"},
+                        },
+                        "required": [
+                            "symbol",
+                            "severity",
+                            "headline",
+                            "details",
+                            "event_type",
+                            "source",
+                        ],
+                    },
+                },
+                "scan_summary": {"type": "string"},
+            },
+            "required": ["events", "scan_summary"],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> MarketResearch:
+        """Construct from parsed JSON, skipping malformed events."""
+        raw_events = data.get("events", [])
+        events: list[EventAlert] = []
+        if isinstance(raw_events, list):
+            for item in raw_events:
+                if isinstance(item, dict):
+                    try:
+                        events.append(EventAlert.from_dict(item))
+                    except (ValueError, KeyError):
+                        pass
+        return cls(
+            events=events,
+            scan_summary=str(data.get("scan_summary", "")),
+        )

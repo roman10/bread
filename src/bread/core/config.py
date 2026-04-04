@@ -153,6 +153,7 @@ class AlertSettings(BaseModel):
     on_daily_summary: bool = True
     on_risk_breach: bool = True
     on_error: bool = True
+    on_research: bool = True
     rate_limit_seconds: int = Field(default=60, ge=0)
 
 

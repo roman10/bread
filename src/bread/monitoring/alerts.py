@@ -65,6 +65,24 @@ class AlertManager:
             apprise.NotifyType.WARNING,
         )
 
+    def notify_event_alert(
+        self,
+        symbol: str,
+        headline: str,
+        details: str,
+        event_type: str,
+    ) -> None:
+        """Send market event alert (high priority)."""
+        if not self._config.on_research:
+            return
+        body = f"{symbol} [{event_type}]: {headline}\n{details[:300]}"
+        self._send(
+            f"event_{symbol}",
+            f"Market Event: {symbol}",
+            body,
+            apprise.NotifyType.WARNING,
+        )
+
     def notify_error(self, error: str) -> None:
         """Send system error alert (critical priority)."""
         if not self._config.on_error:

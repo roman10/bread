@@ -340,6 +340,51 @@ def run(mode: str) -> None:
         misfire_grace_time=900,
         coalesce=True,
     )
+    # 10b. Research scheduler (optional, Phase 3)
+    if claude_client and _config.claude.research_enabled:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        from bread.ai.research import run_research_scan
+
+        def _research_tick() -> None:
+            """Scheduled research scan — search for market-moving events."""
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+            if now_et.weekday() >= 5:
+                logger.debug("Research scan skipped: weekend")
+                return
+            if not (7 <= now_et.hour < 18):
+                logger.debug("Research scan skipped: outside research hours")
+                return
+            held = [p.symbol for p in _engine.get_positions()]
+            watchlist = list(
+                dict.fromkeys(sym for s in _strategies for sym in s.universe)
+            )
+            run_research_scan(
+                claude_client,
+                _session_factory,
+                held,
+                watchlist,
+                alert_manager=_alert_manager,
+            )
+
+        _scheduler.add_job(
+            _research_tick,
+            IntervalTrigger(
+                hours=_config.claude.research_interval_hours,
+                timezone="America/New_York",
+            ),
+            id="event_research",
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+        logger.info(
+            "Event research enabled (every %dh)",
+            _config.claude.research_interval_hours,
+        )
+
     _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
 
     # 11. Signal handlers

@@ -608,3 +608,99 @@ class TestCircuitBreakerIntegration:
         monkeypatch.setattr(time, "monotonic", lambda: base_time + 61.0)
         review = client.review_signal(_make_signal(), _make_context())
         assert review.approved is True
+
+
+# ------------------------------------------------------------------
+# research_events tests
+# ------------------------------------------------------------------
+
+
+def _research_response(**overrides: object) -> CliResponse:
+    defaults: dict[str, object] = {
+        "result": {
+            "events": [
+                {
+                    "symbol": "SPY",
+                    "severity": "high",
+                    "headline": "Fed rate hike",
+                    "details": "Federal Reserve raised rates by 25bps.",
+                    "event_type": "macro",
+                    "source": "https://reuters.com",
+                },
+            ],
+            "scan_summary": "1 notable event found",
+        },
+        "raw_output": "{}",
+        "model": "claude-sonnet-4-20250514",
+        "duration_ms": 15000,
+        "success": True,
+        "error": None,
+        "session_id": "test-session",
+        "cost_usd": 0.0,
+        "input_tokens": 500,
+        "output_tokens": 200,
+    }
+    defaults.update(overrides)
+    return CliResponse(**defaults)  # type: ignore[arg-type]
+
+
+class TestResearchEvents:
+    @patch("bread.ai.client.CliBackend")
+    def test_success(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _research_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.research_events(["SPY", "QQQ"], ["SPY"])
+
+        assert len(result.events) == 1
+        assert result.events[0].symbol == "SPY"
+        assert result.events[0].severity == "high"
+        assert result.scan_summary == "1 notable event found"
+
+    @patch("bread.ai.client.CliBackend")
+    def test_uses_web_tools(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _research_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        client.research_events(["SPY"], ["SPY"])
+
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["allowed_tools"] == ["WebSearch", "WebFetch"]
+
+    @patch("bread.ai.client.CliBackend")
+    def test_uses_research_model(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _research_response()
+
+        client = ClaudeClient(_config(research_model="opus"), db_session_factory)
+        client.research_events(["SPY"], [])
+
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["model"] == "opus"
+
+    @patch("bread.ai.client.CliBackend")
+    def test_parse_error_on_non_dict(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _research_response(result="not a dict")
+
+        client = ClaudeClient(_config(), db_session_factory)
+        with pytest.raises(ClaudeParseError, match="Expected structured dict"):
+            client.research_events(["SPY"], [])

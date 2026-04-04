@@ -110,6 +110,7 @@ alerts:
   on_daily_summary: true
   on_risk_breach: true
   on_error: true
+  on_research: true
   rate_limit_seconds: 60
 
 claude:

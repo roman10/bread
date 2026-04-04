@@ -7,11 +7,13 @@ import time
 from typing import TYPE_CHECKING
 
 from bread.ai.cli_backend import CliBackend
-from bread.ai.models import CliResponse, SignalReview, TradeContext
+from bread.ai.models import CliResponse, EventAlert, MarketResearch, SignalReview, TradeContext
 from bread.ai.prompts import (
     BATCH_REVIEW_SYSTEM_PROMPT,
+    RESEARCH_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
     build_batch_review_prompt,
+    build_research_prompt,
     build_single_review_prompt,
 )
 from bread.core.exceptions import ClaudeError, ClaudeParseError, ClaudeUnavailableError
@@ -93,9 +95,14 @@ class ClaudeClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def review_signal(self, signal: Signal, context: TradeContext) -> SignalReview:
+    def review_signal(
+        self,
+        signal: Signal,
+        context: TradeContext,
+        event_alerts: list[EventAlert] | None = None,
+    ) -> SignalReview:
         """Ask Claude to review a trading signal. Returns approve/reject."""
-        prompt = build_single_review_prompt(signal, context)
+        prompt = build_single_review_prompt(signal, context, event_alerts=event_alerts)
         response = self._call(
             prompt=prompt,
             json_schema=SignalReview.json_schema(),
@@ -114,6 +121,7 @@ class ClaudeClient:
         self,
         signals: list[Signal],
         context: TradeContext,
+        event_alerts: list[EventAlert] | None = None,
     ) -> list[SignalReview]:
         """Ask Claude to review multiple trading signals in one CLI call.
 
@@ -125,12 +133,12 @@ class ClaudeClient:
             return []
         if len(signals) == 1:
             try:
-                return [self.review_signal(signals[0], context)]
+                return [self.review_signal(signals[0], context, event_alerts=event_alerts)]
             except ClaudeError:
                 logger.warning("Single signal review failed, auto-approving")
                 return [_DEFAULT_REVIEW]
 
-        prompt = build_batch_review_prompt(signals, context)
+        prompt = build_batch_review_prompt(signals, context, event_alerts=event_alerts)
         try:
             response = self._call(
                 prompt=prompt,
@@ -147,6 +155,34 @@ class ClaudeClient:
             return [_DEFAULT_REVIEW] * len(signals)
 
         return self._parse_batch_reviews(response, len(signals))
+
+    def research_events(
+        self,
+        symbols: list[str],
+        held_symbols: list[str],
+    ) -> MarketResearch:
+        """Search web for market-moving events affecting *symbols*.
+
+        Uses ``WebSearch`` and ``WebFetch`` tools with a longer timeout and
+        more agent turns than signal review.
+        """
+        prompt = build_research_prompt(symbols, held_symbols)
+        response = self._call(
+            prompt=prompt,
+            json_schema=MarketResearch.json_schema(),
+            system_prompt=RESEARCH_SYSTEM_PROMPT,
+            model=self._config.research_model,
+            allowed_tools=["WebSearch", "WebFetch"],
+            max_turns=8,
+            timeout=120,
+            use_case="event_research",
+        )
+        if isinstance(response.result, dict):
+            return MarketResearch.from_dict(response.result)
+        raise ClaudeParseError(
+            f"Expected structured dict, got {type(response.result).__name__}: "
+            f"{str(response.result)[:200]}"
+        )
 
     def _parse_batch_reviews(
         self,
