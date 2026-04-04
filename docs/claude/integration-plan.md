@@ -1,0 +1,303 @@
+# bread + Claude AI Integration Plan (Claude Max Plan)
+
+## Context
+
+bread is a fully automated Python swing trading bot (ETF momentum strategies, Alpaca broker, 15-min tick cycle, pure rule-based technical analysis, no LLM integration). The goal is to add a Claude AI layer for research, signal validation, and event monitoring.
+
+**Key constraint: No Anthropic API SDK.** The user has a Claude Max Plan and all integration must go through Claude Code CLI or mcode MCP — zero API billing.
+
+---
+
+## Integration Backends Available (all use Claude Max Plan)
+
+| Backend | How | Latency | Structured Output | Web Search | Independence |
+|---------|-----|---------|-------------------|------------|-------------|
+| **Claude Code CLI** | `claude -p "prompt" --output-format json` | 5-30s | Yes (`--json-schema`) | Yes | Standalone |
+| **mcode MCP** | HTTP to `localhost:7532/mcp` → session/task | 10-60s | No (terminal buffer) | Yes | Requires mcode |
+| **Claude Agent SDK** | `claude-agent-sdk` Python pkg | 3-15s | Yes (native) | Yes | Needs API key (**NOT Max Plan**) |
+
+**Claude Agent SDK is ruled out** — it requires `ANTHROPIC_API_KEY` (pay-per-token), not Max Plan.
+
+---
+
+## Recommended Architecture: CLI-First, mcode-Optional
+
+### Why CLI is the primary backend:
+1. **Structured output** — `--output-format json` + `--json-schema` returns validated JSON matching a Pydantic-compatible schema. This is critical for getting typed `approve/reject` responses.
+2. **No runtime dependency** — works standalone, no Electron app needed.
+3. **Web search built-in** — `WebSearch` tool available in CLI.
+4. **Model selection** — `--model sonnet` or `--model opus` or `--model haiku`.
+5. **System prompt control** — `--append-system-prompt` for role injection.
+6. **Tool control** — `--allowedTools "WebSearch,Read"` to restrict capabilities.
+7. **5-30s latency** is fine in a 15-min tick cycle.
+
+### When mcode MCP adds value (optional, Phase 2+):
+- Visual monitoring of Claude's research in the mcode UI
+- Session persistence across multiple prompts (conversational context)
+- Task queue with retry and scheduling
+- But: output is terminal buffer text (no structured JSON), requires mcode running
+
+### Architecture Diagram
+
+```
+bread tick loop (every 15 min)
+    │
+    ├─ [Strategy.evaluate()] ──────── ClaudeStrategy calls CLI
+    │                                   claude -p "analyze {data}" --json-schema {...}
+    │
+    ├─ [ExecutionEngine.process_signals()]
+    │   │
+    │   ├── risk_manager.evaluate()     (existing, deterministic)
+    │   │
+    │   └── claude_client.review_signal()  (NEW)
+    │         │
+    │         └── CLI: claude -p "review this signal" --json-schema {approve/reject}
+    │
+    └─ [broker.submit_bracket_order()]
+
+
+Background thread (every 2-4 hours):
+    EventMonitor.scan()
+        └── CLI: claude -p "search for events affecting {symbols}" --allowedTools "WebSearch"
+```
+
+---
+
+## Feasibility Assessment
+
+### Use Case 1: Claude as strategy / part of strategy
+**Feasible: YES** — CLI with `--json-schema` can return `Signal`-compatible structured output. bread's `Strategy` ABC is a clean integration point. A `ClaudeStrategy` registered via `@register("claude_analyst")` fits the existing pattern. The CLI call takes 5-15s, well within 15-min tick budget.
+
+### Use Case 2: Claude as order confirmation (replace human)
+**Feasible: YES, highest value** — Clean insertion at `engine.py:214-228` (between risk approval and order submission). Pass signal + portfolio context via CLI prompt, get structured `{approved: bool, reasoning: str}` back via `--json-schema`. Advisory mode by default.
+
+### Use Case 3: Event monitoring / online search
+**Feasible: YES** — CLI with `--allowedTools "WebSearch"` does web research. Run in background thread, store results, flag symbols for next tick. This is where Claude shines — qualitative analysis that rule-based systems can't do.
+
+---
+
+## Stack-Ranked Use Cases
+
+| Rank | Use Case | Value | Effort | Rationale |
+|------|----------|-------|--------|-----------|
+| 1 | **Signal review before execution** | HIGH | LOW | Clean insertion point; structured approve/reject; direct risk reduction |
+| 2 | **Event monitoring + web search** | HIGH | MEDIUM | Claude's unique strength; web search built into CLI; async-friendly |
+| 3 | **Claude-powered strategy** | MEDIUM | MEDIUM | Follows Strategy ABC; but prompt engineering intensive, non-deterministic |
+| 4 | **Trade narrative / journaling** | LOW | LOW | Nice-to-have enrichment; simple prompt, no schema needed |
+| 5 | **Market regime detection** | MEDIUM | HIGH | Could gate all strategies; powerful but hard to validate |
+
+---
+
+## Foundation Module Design
+
+### New module: `src/bread/ai/`
+
+```
+src/bread/ai/
+    __init__.py
+    cli_backend.py  # CliBackend — subprocess wrapper for `claude -p`
+    client.py       # ClaudeClient — orchestrator (circuit breaker, batching, usage tracking)
+    models.py       # Response dataclasses + JSON schemas for --json-schema
+```
+
+`ClaudeSettings` lives in `core/config.py` alongside `AlpacaSettings` (not a separate file — follows existing convention). Prompt templates go in `prompts.py` when needed in Phase 2.
+
+### `cli_backend.py` — Core Integration
+
+```python
+class CliBackend:
+    """Calls Claude Code CLI via subprocess, uses Max Plan."""
+
+    def query(
+        self,
+        prompt: str,
+        *,
+        json_schema: dict | None = None,      # For structured output
+        system_prompt: str | None = None,       # --append-system-prompt
+        model: str = "sonnet",                  # --model
+        allowed_tools: list[str] | None = None, # --allowedTools
+        max_turns: int = 3,                     # --max-turns (limit agent loops)
+        timeout: int = 60,                      # subprocess timeout
+    ) -> CliResponse:
+        """Run `claude -p` and return parsed response."""
+        args = ["claude", "-p", prompt, "--output-format", "json"]
+        if json_schema:
+            args += ["--json-schema", json.dumps(json_schema)]
+        if system_prompt:
+            args += ["--append-system-prompt", system_prompt]
+        if model:
+            args += ["--model", model]
+        if allowed_tools:
+            args += ["--allowedTools", ",".join(allowed_tools)]
+        args += ["--max-turns", str(max_turns)]
+
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return self._parse_response(result)
+```
+
+Key behaviors:
+- **Structured output**: `--json-schema` validates Claude's response against a schema. bread defines schemas matching its response dataclasses (SignalReview, MarketResearch, etc.)
+- **Timeout handling**: `subprocess.run(timeout=60)` kills the process on timeout
+- **Error handling**: Parse stderr, detect rate limits, handle non-zero exit codes
+- **Model selection**: Default to Sonnet for quality/speed balance; Haiku for simple reviews; Opus for deep research
+
+### `client.py` — Orchestrator
+
+```python
+class ClaudeClient:
+    def __init__(self, config: ClaudeSettings, session_factory):
+        self._backend = CliBackend(config)
+        self._usage_tracker = UsageTracker(session_factory)  # Log calls to SQLite
+        self._circuit_breaker = CircuitBreaker(max_failures=3, cooldown_seconds=300)
+
+    def review_signal(self, signal: Signal, context: TradeContext) -> SignalReview:
+        """Ask Claude to review a trading signal. Returns approve/reject."""
+
+    def research_events(self, symbols: list[str]) -> MarketResearch:
+        """Web search for market-moving events affecting given symbols."""
+
+    def evaluate_market(self, universe_data: dict, positions: list) -> list[Signal]:
+        """Ask Claude to generate trading signals from market data."""
+```
+
+### `models.py` — Response Types + JSON Schemas
+
+```python
+@dataclass(frozen=True)
+class SignalReview:
+    approved: bool
+    confidence: float        # 0.0-1.0
+    reasoning: str
+    risk_flags: list[str]
+
+    @classmethod
+    def json_schema(cls) -> dict:
+        """Schema for --json-schema flag."""
+        return {
+            "type": "object",
+            "properties": {
+                "approved": {"type": "boolean"},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "reasoning": {"type": "string"},
+                "risk_flags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["approved", "confidence", "reasoning", "risk_flags"],
+        }
+```
+
+### Key Design Decisions
+
+1. **CLI subprocess, not SDK** — Uses Claude Max Plan, zero API cost.
+
+2. **`--json-schema` for structured output** — Claude validates its response against the schema before returning. This gives typed, parseable responses without fragile text parsing.
+
+3. **Circuit breaker** — After 3 consecutive CLI failures (timeout, crash, rate limit), disable Claude calls for 5 minutes. Fall back to pure rule-based execution. Never let Claude instability prevent trading.
+
+4. **Advisory mode by default** — `review_mode: "advisory" | "gating"` config. Advisory logs Claude's opinion but does NOT block order submission. Gating requires Claude approval. Default: advisory (risk manager is deterministic and battle-tested).
+
+5. **Batch multiple signals per CLI call** — If 3 BUY signals pass risk validation, don't spawn 3 separate CLI processes (30s). Instead, batch them into one prompt ("Review these 3 signals") and get a list of reviews back in one 10-15s call. Reduces latency proportionally with signal count.
+
+6. **Synchronous in tick loop** — A single batched CLI call (5-15s) is negligible in a 15-min cycle. No async needed for Use Cases 1 & 2. Use Case 3 (event monitoring) runs in a background thread.
+
+7. **Usage tracking in SQLite** — New `claude_usage_log` table records every call (model, prompt length, duration, result). For monitoring usage patterns even though Max Plan is "unlimited."
+
+8. **Text-parse fallback** — If `--json-schema` fails or produces unexpected output, fall back to parsing Claude's text response with a regex/heuristic. Belt-and-suspenders for the most fragile part of the integration.
+
+### Config Additions
+
+In `config/default.yaml`:
+```yaml
+claude:
+  enabled: false
+  cli_path: "claude"                 # path to claude binary
+  default_model: "sonnet"            # haiku | sonnet | opus
+  review_model: "sonnet"             # model for signal review
+  research_model: "sonnet"           # model for event research
+  timeout_seconds: 60                # CLI subprocess timeout
+  max_turns: 3                       # limit agent loops per call
+  review_mode: "advisory"            # advisory | gating
+  research_enabled: false            # enable background event monitoring
+  research_interval_hours: 4         # how often to scan for events
+  circuit_breaker_max_failures: 3
+  circuit_breaker_cooldown_seconds: 300
+```
+
+In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
+
+### Integration Points in Existing Code
+
+1. **`execution/engine.py:214-228`** — After `self._risk.evaluate()` approves, before `self._broker.submit_bracket_order()`. New: `if self._claude and self._config.claude.enabled: review = self._claude.review_signal(sig, context)`.
+
+2. **`app.py::run()` ~line 269** — Initialize `ClaudeClient`, pass to `ExecutionEngine`.
+
+3. **`app.py` scheduler** — Add optional research job: `_scheduler.add_job(research_tick, CronTrigger(hour="10,14"), ...)`.
+
+4. **`strategy/claude_analyst.py`** — New `@register("claude_analyst")` strategy using `ClaudeClient.evaluate_market()`.
+
+5. **`db/models.py`** — Add `ClaudeUsageLog` table.
+
+6. **`monitoring/alerts.py`** — Add Claude's reasoning to Discord trade notifications.
+
+---
+
+## Implementation Phases
+
+### Phase 1: Foundation
+**New files (4):**
+- `src/bread/ai/__init__.py`
+- `src/bread/ai/cli_backend.py` — CliBackend subprocess wrapper with text-parse fallback
+- `src/bread/ai/client.py` — ClaudeClient with circuit breaker, signal batching, usage tracking
+- `src/bread/ai/models.py` — SignalReview, MarketResearch, TradeContext, JSON schemas
+
+**Modified files (3):**
+- `src/bread/core/config.py` — add `ClaudeSettings` to AppConfig (follows AlpacaSettings pattern)
+- `src/bread/db/models.py` — add `ClaudeUsageLog` table
+- `config/default.yaml` — add `claude:` section (disabled by default)
+
+**Tests (2):**
+- `tests/unit/test_cli_backend.py` — mock subprocess, verify arg building, timeout, error handling
+- `tests/unit/test_claude_client.py` — circuit breaker, usage tracking
+
+### Phase 2: Signal Review (Use Case 2)
+- Modify `execution/engine.py` — add `_claude_review()` hook
+- Modify `app.py` — wire ClaudeClient into ExecutionEngine
+- Add `src/bread/ai/prompts.py` — signal review prompt + system prompt templates
+- Modify `monitoring/alerts.py` — include Claude reasoning in notifications
+
+### Phase 3: Event Monitoring (Use Case 3)
+- Add `src/bread/ai/research.py` — EventMonitor with background thread + Queue
+- Add scheduler job in `app.py` for periodic research
+- Store results in new `event_alerts` SQLite table
+- Surface flagged symbols in dashboard
+
+### Phase 4: Claude Strategy (Use Case 1)
+- New `src/bread/strategy/claude_analyst.py` — `@register("claude_analyst")`
+- New `config/strategies/claude_analyst.yaml`
+
+### Phase 5 (optional): mcode MCP Integration
+- Add `src/bread/ai/mcode_backend.py` — HTTP client for mcode MCP
+- Session persistence for multi-turn research conversations
+- Visual monitoring of Claude's analysis in mcode UI
+
+---
+
+## Verification Plan
+
+1. **Unit tests**: Mock `subprocess.run`, verify CLI arg construction, JSON schema passing, timeout handling, circuit breaker behavior, usage logging
+2. **Integration test**: With Claude Code CLI installed, run a real `claude -p "What is 2+2?" --output-format json` and verify parsing
+3. **Manual test**: Run `bread run --mode paper` with `claude.enabled: true`:
+   - Verify Claude review logs appear for BUY signals
+   - Verify circuit breaker activates when CLI is unavailable
+   - Verify trading continues normally when Claude is disabled
+   - Verify `claude_usage_log` table records calls
+   - Check that total tick time stays under 15 minutes
+
+---
+
+## What This Plan Does NOT Include (deferred)
+
+- Anthropic API SDK (ruled out due to cost — Max Plan only)
+- mcode as required runtime dependency (optional in Phase 5)
+- Async architecture (overkill for 15-min tick cycle)
+- Backtesting with Claude (non-deterministic, expensive in time)
+- Auto-parameter tuning (premature optimization)
