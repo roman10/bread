@@ -14,6 +14,7 @@ from bread.data.universe import (
     IndexProvider,
     PredefinedProvider,
     UniverseRegistry,
+    resolve_strategy_universe,
 )
 
 
@@ -210,3 +211,58 @@ class TestIndexProvider:
             provider = IndexProvider("nasdaq100", tmp_path, ttl_days=7)
 
         assert provider.get_symbols() == ["AAPL", "NVDA"]
+
+    def test_corrupted_cache_triggers_fetch(self, tmp_path: Path) -> None:
+        """Corrupted JSON cache should be treated as stale and trigger fetch."""
+        import pandas as pd
+
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "sp500.json").write_text("{INVALID JSON")
+
+        fake_df = pd.DataFrame({
+            "Symbol": ["AAPL"],
+            "GICS Sector": ["Information Technology"],
+        })
+        with patch("pandas.read_html", return_value=[fake_df]):
+            provider = IndexProvider("sp500", tmp_path, ttl_days=7)
+
+        assert provider.get_symbols() == ["AAPL"]
+
+    def test_creates_cache_directory(self, tmp_path: Path) -> None:
+        """Cache directory is created automatically on fetch."""
+        import pandas as pd
+
+        cache_dir = tmp_path / "nested" / "cache"
+        assert not cache_dir.exists()
+
+        fake_df = pd.DataFrame({
+            "Symbol": ["AAPL"],
+            "GICS Sector": ["Information Technology"],
+        })
+        with patch("pandas.read_html", return_value=[fake_df]):
+            provider = IndexProvider("sp500", cache_dir, ttl_days=7)
+
+        assert cache_dir.exists()
+        assert provider.get_symbols() == ["AAPL"]
+
+
+class TestResolveStrategyUniverse:
+    def test_string_resolves_via_registry(self, tmp_path: Path) -> None:
+        specs = {"sp500": {"type": "predefined", "symbols": ["AAPL", "MSFT"]}}
+        registry = UniverseRegistry(specs, tmp_path)
+        result = resolve_strategy_universe(
+            {"universe": "sp500"}, registry, "test_strategy"
+        )
+        assert result == ["AAPL", "MSFT"]
+
+    def test_list_returns_none(self, tmp_path: Path) -> None:
+        registry = UniverseRegistry({}, tmp_path)
+        result = resolve_strategy_universe(
+            {"universe": ["SPY", "QQQ"]}, registry, "test_strategy"
+        )
+        assert result is None
+
+    def test_missing_key_returns_none(self, tmp_path: Path) -> None:
+        registry = UniverseRegistry({}, tmp_path)
+        result = resolve_strategy_universe({}, registry, "test_strategy")
+        assert result is None

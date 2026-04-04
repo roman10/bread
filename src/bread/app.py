@@ -270,12 +270,12 @@ def run(mode: str) -> None:
 
     # 7. Initialize universe registry and load strategies
     import bread.strategy  # noqa: F401
-    from bread.data.universe import UniverseRegistry
+    from bread.data.universe import UNIVERSE_CACHE_DIR, UniverseRegistry, resolve_strategy_universe
     from bread.strategy.base import load_strategy_config
     from bread.strategy.registry import get_strategy
 
     universe_registry = UniverseRegistry(
-        _config.universe_providers, CONFIG_DIR.parent / "data" / "universe_cache"
+        _config.universe_providers, UNIVERSE_CACHE_DIR
     )
 
     _strategies = []
@@ -289,16 +289,8 @@ def run(mode: str) -> None:
         cls = get_strategy(s.name)
         cfg_path = s.config_path or f"strategies/{s.name}.yaml"
 
-        # Resolve universe provider references (string -> symbol list)
-        resolved_universe = None
         strat_cfg = load_strategy_config(CONFIG_DIR / cfg_path)
-        raw_universe = strat_cfg.get("universe", [])
-        if isinstance(raw_universe, str):
-            resolved_universe = universe_registry.get(raw_universe).get_symbols()
-            logger.info(
-                "Strategy %s: resolved universe '%s' -> %d symbols",
-                s.name, raw_universe, len(resolved_universe),
-            )
+        resolved_universe = resolve_strategy_universe(strat_cfg, universe_registry, s.name)
 
         inst = cls(CONFIG_DIR / cfg_path, _config.indicators, universe=resolved_universe)  # type: ignore[call-arg]
         _strategies.append(inst)

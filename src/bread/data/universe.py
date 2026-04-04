@@ -10,12 +10,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from bread.core.config import CONFIG_DIR
 from bread.core.exceptions import ConfigError
 
 if TYPE_CHECKING:
     import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+UNIVERSE_CACHE_DIR: Path = CONFIG_DIR.parent / "data" / "universe_cache"
 
 
 class UniverseProvider(ABC):
@@ -250,3 +253,27 @@ class UniverseRegistry:
             return IndexProvider(spec.index, self._cache_dir, spec.ttl_days)
         else:
             raise ConfigError(f"Unknown provider type: {spec.type}")
+
+
+def resolve_strategy_universe(
+    strategy_config: dict[str, object],
+    registry: UniverseRegistry,
+    strategy_name: str,
+) -> list[str] | None:
+    """Resolve a strategy's ``universe`` field via the registry.
+
+    Returns the resolved symbol list if the field is a provider reference
+    (string), or ``None`` if it's already a list (caller should use the
+    strategy's own default).
+    """
+    raw_universe = strategy_config.get("universe", [])
+    if isinstance(raw_universe, str):
+        resolved = registry.get(raw_universe).get_symbols()
+        logger.info(
+            "Strategy %s: resolved universe '%s' -> %d symbols",
+            strategy_name,
+            raw_universe,
+            len(resolved),
+        )
+        return resolved
+    return None

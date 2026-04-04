@@ -127,16 +127,19 @@ def backtest_cmd(
         strategy_cls = get_strategy(strategy)
 
         # 7. Resolve universe provider references and instantiate strategy
-        from bread.data.universe import UniverseRegistry
+        from bread.data.universe import (
+            UNIVERSE_CACHE_DIR,
+            UniverseRegistry,
+            resolve_strategy_universe,
+        )
 
         universe_registry = UniverseRegistry(
-            config.universe_providers, CONFIG_DIR.parent / "data" / "universe_cache"
+            config.universe_providers, UNIVERSE_CACHE_DIR
         )
-        resolved_universe = None
         strat_cfg = load_strategy_config(strategy_config_path)
-        raw_universe = strat_cfg.get("universe", [])
-        if isinstance(raw_universe, str):
-            resolved_universe = universe_registry.get(raw_universe).get_symbols()
+        resolved_universe = resolve_strategy_universe(
+            strat_cfg, universe_registry, strategy
+        )
 
         strat_instance = strategy_cls(  # type: ignore[call-arg]
             strategy_config_path, config.indicators, universe=resolved_universe,
