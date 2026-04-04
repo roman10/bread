@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from bread.ai.client import CircuitBreaker, ClaudeClient
-from bread.ai.models import CliResponse, SignalReview, TradeContext
+from bread.ai.models import CliResponse, SignalReview, StrategyAnalysis, TradeContext
 from bread.core.config import ClaudeSettings
 from bread.core.exceptions import ClaudeParseError, ClaudeTimeoutError, ClaudeUnavailableError
 from bread.core.models import Signal, SignalDirection
@@ -704,3 +704,120 @@ class TestResearchEvents:
         client = ClaudeClient(_config(), db_session_factory)
         with pytest.raises(ClaudeParseError, match="Expected structured dict"):
             client.research_events(["SPY"], [])
+
+
+# ------------------------------------------------------------------
+# analyze_technicals tests
+# ------------------------------------------------------------------
+
+
+def _analysis_response(**overrides: object) -> CliResponse:
+    defaults: dict[str, object] = {
+        "result": {
+            "recommendations": [
+                {
+                    "symbol": "SPY",
+                    "action": "BUY",
+                    "strength": 0.75,
+                    "reasoning": "Strong momentum with volume confirmation",
+                },
+                {
+                    "symbol": "QQQ",
+                    "action": "HOLD",
+                    "strength": 0.0,
+                    "reasoning": "No clear setup",
+                },
+            ],
+            "market_assessment": "Bullish trend with healthy breadth",
+        },
+        "raw_output": "{}",
+        "model": "claude-sonnet-4-20250514",
+        "duration_ms": 8000,
+        "success": True,
+        "error": None,
+        "session_id": "test-session",
+        "cost_usd": 0.0,
+        "input_tokens": 500,
+        "output_tokens": 200,
+    }
+    defaults.update(overrides)
+    return CliResponse(**defaults)  # type: ignore[arg-type]
+
+
+class TestAnalyzeTechnicals:
+    @patch("bread.ai.client.CliBackend")
+    def test_success(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _analysis_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        result = client.analyze_technicals("test prompt")
+
+        assert len(result.recommendations) == 2
+        assert result.recommendations[0].symbol == "SPY"
+        assert result.recommendations[0].action == "BUY"
+        assert result.market_assessment == "Bullish trend with healthy breadth"
+
+    @patch("bread.ai.client.CliBackend")
+    def test_uses_strategy_model(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _analysis_response()
+
+        client = ClaudeClient(_config(strategy_model="opus"), db_session_factory)
+        client.analyze_technicals("test prompt")
+
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["model"] == "opus"
+
+    @patch("bread.ai.client.CliBackend")
+    def test_uses_strategy_schema(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _analysis_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        client.analyze_technicals("test prompt")
+
+        call_kwargs = mock_backend.query.call_args[1]
+        assert call_kwargs["json_schema"] == StrategyAnalysis.json_schema()
+
+    @patch("bread.ai.client.CliBackend")
+    def test_parse_error_on_non_dict(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _analysis_response(result="not a dict")
+
+        client = ClaudeClient(_config(), db_session_factory)
+        with pytest.raises(ClaudeParseError, match="Expected structured dict"):
+            client.analyze_technicals("test prompt")
+
+    @patch("bread.ai.client.CliBackend")
+    def test_logged_as_strategy_analysis(
+        self,
+        mock_backend_cls: MagicMock,
+        db_session_factory: sessionmaker,  # type: ignore[type-arg]
+    ) -> None:
+        mock_backend = mock_backend_cls.return_value
+        mock_backend.query.return_value = _analysis_response()
+
+        client = ClaudeClient(_config(), db_session_factory)
+        client.analyze_technicals("test prompt")
+
+        with db_session_factory() as session:
+            logs = session.execute(select(ClaudeUsageLog)).scalars().all()
+            assert len(logs) == 1
+            assert logs[0].use_case == "strategy_analysis"

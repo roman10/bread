@@ -7,11 +7,19 @@ import time
 from typing import TYPE_CHECKING
 
 from bread.ai.cli_backend import CliBackend
-from bread.ai.models import CliResponse, EventAlert, MarketResearch, SignalReview, TradeContext
+from bread.ai.models import (
+    CliResponse,
+    EventAlert,
+    MarketResearch,
+    SignalReview,
+    StrategyAnalysis,
+    TradeContext,
+)
 from bread.ai.prompts import (
     BATCH_REVIEW_SYSTEM_PROMPT,
     RESEARCH_SYSTEM_PROMPT,
     REVIEW_SYSTEM_PROMPT,
+    STRATEGY_SYSTEM_PROMPT,
     build_batch_review_prompt,
     build_research_prompt,
     build_single_review_prompt,
@@ -179,6 +187,26 @@ class ClaudeClient:
         )
         if isinstance(response.result, dict):
             return MarketResearch.from_dict(response.result)
+        raise ClaudeParseError(
+            f"Expected structured dict, got {type(response.result).__name__}: "
+            f"{str(response.result)[:200]}"
+        )
+
+    def analyze_technicals(self, prompt: str) -> StrategyAnalysis:
+        """Ask Claude to analyze technical indicators and recommend trades.
+
+        Used by the ``claude_analyst`` strategy to get BUY/SELL/HOLD
+        recommendations for each symbol in its universe.
+        """
+        response = self._call(
+            prompt=prompt,
+            json_schema=StrategyAnalysis.json_schema(),
+            system_prompt=STRATEGY_SYSTEM_PROMPT,
+            model=self._config.strategy_model,
+            use_case="strategy_analysis",
+        )
+        if isinstance(response.result, dict):
+            return StrategyAnalysis.from_dict(response.result)
         raise ClaudeParseError(
             f"Expected structured dict, got {type(response.result).__name__}: "
             f"{str(response.result)[:200]}"

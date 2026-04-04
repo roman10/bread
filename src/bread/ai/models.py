@@ -88,9 +88,7 @@ class SignalReview:
 
 
 _VALID_SEVERITIES = frozenset({"high", "medium", "low", "none"})
-_VALID_EVENT_TYPES = frozenset(
-    {"earnings", "fda", "analyst", "macro", "sector", "other"}
-)
+_VALID_EVENT_TYPES = frozenset({"earnings", "fda", "analyst", "macro", "sector", "other"})
 
 
 @dataclass(frozen=True)
@@ -197,4 +195,93 @@ class MarketResearch:
         return cls(
             events=events,
             scan_summary=str(data.get("scan_summary", "")),
+        )
+
+
+_VALID_ACTIONS = frozenset({"BUY", "SELL", "HOLD"})
+
+
+@dataclass(frozen=True)
+class StrategyRecommendation:
+    """Claude's recommendation for a single symbol from technical analysis."""
+
+    symbol: str
+    action: str  # "BUY" | "SELL" | "HOLD"
+    strength: float  # 0.0-1.0
+    reasoning: str
+
+    def __post_init__(self) -> None:
+        if self.action not in _VALID_ACTIONS:
+            raise ValueError(f"action must be one of {sorted(_VALID_ACTIONS)}, got {self.action!r}")
+        if not 0.0 <= self.strength <= 1.0:
+            raise ValueError(f"strength must be in [0.0, 1.0], got {self.strength}")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> StrategyRecommendation:
+        """Construct from parsed JSON with defensive type coercion."""
+        action = str(data.get("action", "HOLD")).upper()
+        if action not in _VALID_ACTIONS:
+            action = "HOLD"
+        strength = max(0.0, min(1.0, float(str(data.get("strength", 0.0)))))
+        return cls(
+            symbol=str(data.get("symbol", "")),
+            action=action,
+            strength=strength,
+            reasoning=str(data.get("reasoning", "")),
+        )
+
+
+@dataclass(frozen=True)
+class StrategyAnalysis:
+    """Claude's structured response for technical analysis of multiple symbols."""
+
+    recommendations: list[StrategyRecommendation]
+    market_assessment: str
+
+    @classmethod
+    def json_schema(cls) -> dict[str, object]:
+        """JSON Schema for the --json-schema CLI flag."""
+        return {
+            "type": "object",
+            "properties": {
+                "recommendations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string"},
+                            "action": {
+                                "type": "string",
+                                "enum": ["BUY", "SELL", "HOLD"],
+                            },
+                            "strength": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                            },
+                            "reasoning": {"type": "string"},
+                        },
+                        "required": ["symbol", "action", "strength", "reasoning"],
+                    },
+                },
+                "market_assessment": {"type": "string"},
+            },
+            "required": ["recommendations", "market_assessment"],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> StrategyAnalysis:
+        """Construct from parsed JSON, skipping malformed recommendations."""
+        raw_recs = data.get("recommendations", [])
+        recs: list[StrategyRecommendation] = []
+        if isinstance(raw_recs, list):
+            for item in raw_recs:
+                if isinstance(item, dict):
+                    try:
+                        recs.append(StrategyRecommendation.from_dict(item))
+                    except (ValueError, KeyError):
+                        pass
+        return cls(
+            recommendations=recs,
+            market_assessment=str(data.get("market_assessment", "")),
         )

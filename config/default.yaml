@@ -71,6 +71,10 @@ strategies:
     config_path: strategies/macd_divergence.yaml
   - name: gap_fade
     config_path: strategies/gap_fade.yaml
+  - name: claude_analyst
+    config_path: strategies/claude_analyst.yaml
+    enabled: false
+    modes: [paper]
 
 backtest:
   initial_capital: 10000.0
@@ -119,6 +123,7 @@ claude:
   default_model: "sonnet"
   review_model: "sonnet"
   research_model: "sonnet"
+  strategy_model: "sonnet"
   timeout_seconds: 60
   max_turns: 3
   review_mode: "advisory"

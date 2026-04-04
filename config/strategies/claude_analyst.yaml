@@ -1,0 +1,11 @@
+universe:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - XLF
+  - XLK
+
+analysis:
+  atr_stop_mult: 1.5
+  time_stop_days: 15

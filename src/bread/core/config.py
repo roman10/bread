@@ -163,6 +163,7 @@ class ClaudeSettings(BaseModel):
     default_model: str = "sonnet"
     review_model: str = "sonnet"
     research_model: str = "sonnet"
+    strategy_model: str = "sonnet"
     timeout_seconds: int = Field(default=60, ge=10, le=300)
     max_turns: int = Field(default=3, ge=1, le=10)
     review_mode: Literal["advisory", "gating"] = "advisory"

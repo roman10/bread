@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import signal
 import sys
@@ -300,7 +301,24 @@ def run(mode: str) -> None:
         strat_cfg = load_strategy_config(CONFIG_DIR / cfg_path)
         resolved_universe = resolve_strategy_universe(strat_cfg, universe_registry, s.name)
 
-        inst = cls(CONFIG_DIR / cfg_path, _config.indicators, universe=resolved_universe)  # type: ignore[call-arg]
+        # Pass claude_client to strategies whose constructor accepts it
+        extra_kwargs: dict[str, object] = {}
+        sig = inspect.signature(cls.__init__)
+        if "claude_client" in sig.parameters:
+            if not claude_client:
+                logger.warning(
+                    "Strategy %s requires claude_client but Claude is disabled — skipping",
+                    s.name,
+                )
+                continue
+            extra_kwargs["claude_client"] = claude_client
+
+        inst = cls(  # type: ignore[call-arg]
+            CONFIG_DIR / cfg_path,
+            _config.indicators,
+            universe=resolved_universe,
+            **extra_kwargs,
+        )
         _strategies.append(inst)
 
     logger.info("Loaded %d strategies: %s", len(_strategies), [s.name for s in _strategies])
@@ -359,9 +377,7 @@ def run(mode: str) -> None:
                 logger.debug("Research scan skipped: outside research hours")
                 return
             held = [p.symbol for p in _engine.get_positions()]
-            watchlist = list(
-                dict.fromkeys(sym for s in _strategies for sym in s.universe)
-            )
+            watchlist = list(dict.fromkeys(sym for s in _strategies for sym in s.universe))
             run_research_scan(
                 claude_client,
                 _session_factory,

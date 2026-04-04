@@ -1,7 +1,15 @@
 """Claude AI integration for bread trading bot."""
 
 from bread.ai.client import ClaudeClient
-from bread.ai.models import CliResponse, EventAlert, MarketResearch, SignalReview, TradeContext
+from bread.ai.models import (
+    CliResponse,
+    EventAlert,
+    MarketResearch,
+    SignalReview,
+    StrategyAnalysis,
+    StrategyRecommendation,
+    TradeContext,
+)
 
 __all__ = [
     "ClaudeClient",
@@ -9,5 +17,7 @@ __all__ = [
     "EventAlert",
     "MarketResearch",
     "SignalReview",
+    "StrategyAnalysis",
+    "StrategyRecommendation",
     "TradeContext",
 ]

@@ -125,6 +125,25 @@ def build_research_prompt(
     )
 
 
+# ---------------------------------------------------------------------------
+# Strategy prompts (Phase 4)
+# ---------------------------------------------------------------------------
+
+STRATEGY_SYSTEM_PROMPT: str = (
+    "You are a quantitative technical analyst for an automated swing trading bot. "
+    "Analyze the provided technical indicators and recommend BUY, SELL, or HOLD "
+    "for each symbol. Focus on: trend alignment (SMA structure), momentum (RSI, MACD), "
+    "volatility (Bollinger Bands, ATR), and volume confirmation. "
+    "Be selective — only recommend BUY when multiple factors align. "
+    "Recommend SELL when you see clear technical deterioration."
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
 def format_event_context(event_alerts: list[EventAlert] | None) -> str:
     """Format active event alerts as context for signal review prompts.
 
