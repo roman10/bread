@@ -131,8 +131,9 @@ The bot runs a **tick cycle every 15 minutes** during US market hours (9:30 AM -
 4. **Compute indicators** - SMA, RSI, MACD, ATR, Bollinger Bands
 5. **Evaluate strategies** - Generate buy/sell signals
 6. **Risk check** - Validate signals against position limits, drawdown, PDT rules
-7. **Execute** - Submit bracket orders (with server-side stop-loss)
-8. **Alert** - Notify via Discord/Slack/email
+7. **AI review** - Claude reviews buy signals with market context (optional, advisory by default)
+8. **Execute** - Submit bracket orders (with server-side stop-loss)
+9. **Alert** - Notify via Discord/Slack/email
 
 Stop with `Ctrl+C` - the bot shuts down gracefully (cancels pending orders, saves final snapshot).
 
@@ -231,7 +232,24 @@ When enabled, the system sends notifications for:
 - **Risk breach** - Daily loss limit or drawdown circuit breaker triggered
 - **System errors** - Critical exceptions
 
-## Strategy: ETF Momentum
+## Strategies
+
+Bread ships with 10 strategies. Enable any combination in `config/default.yaml` under `strategies:`.
+
+| Strategy | Style | Description |
+|----------|-------|-------------|
+| `etf_momentum` | Trend-following | RSI oversold reversal + SMA trend confirmation |
+| `macd_trend` | Trend-following | MACD crossover with trend filter |
+| `ema_crossover` | Trend-following | EMA 9/21 crossover with volume confirmation |
+| `bb_mean_reversion` | Mean reversion | Bollinger Band squeeze + RSI divergence |
+| `breakout_squeeze` | Breakout | Volatility squeeze breakout with ATR expansion |
+| `macd_divergence` | Reversal | MACD bullish/bearish divergence detection |
+| `gap_fade` | Mean reversion | Overnight gap fade with intraday reversal |
+| `sector_rotation` | Rotation | Relative strength rotation across sector ETFs |
+| `risk_off_rotation` | Defensive | Rotates into bonds/gold during risk-off regimes |
+| `claude_analyst` | AI-powered | Claude LLM analyzes technicals for BUY/SELL/HOLD (requires `claude.enabled`) |
+
+### ETF Momentum (default)
 
 The default strategy trades 10 liquid ETFs: SPY, QQQ, IWM, DIA, XLF, XLK, XLE, XLV, GLD, TLT.
 
@@ -265,6 +283,29 @@ Seven circuit breakers run before every trade:
 
 Stop-loss orders are submitted as **server-side bracket orders** to Alpaca, so they execute even if the bot crashes.
 
+## Claude AI Integration (Optional)
+
+Bread can use Claude (via [Claude Code](https://claude.ai/code) CLI) for signal review, event monitoring, and AI-powered strategy analysis. All features are disabled by default and designed to fail-open — Claude errors never block trading.
+
+**Requires a Claude Max Plan** (no API key billing). See `docs/claude/integration-plan.md` for full details.
+
+Enable in `config/paper.yaml`:
+
+```yaml
+claude:
+  enabled: true
+  review_mode: "advisory"      # advisory (log-only) or gating (can block trades)
+  research_enabled: true       # periodic web search for market-moving events
+```
+
+| Feature | What it does |
+|---------|-------------|
+| **Signal review** | Reviews BUY signals with portfolio context before execution |
+| **Event monitoring** | Scheduled web search for earnings, FDA, macro events; stores alerts in DB |
+| **Claude analyst strategy** | LLM-powered technical analysis that emits BUY/SELL signals |
+
+Safety: circuit breaker (3 failures → 5 min cooldown), advisory mode by default, all calls logged to `claude_usage_log` table.
+
 ## Backtesting
 
 ```bash
@@ -289,14 +330,15 @@ bread/
 │   ├── app.py                  # Trading bot orchestrator
 │   ├── core/                   # Config, models, exceptions, logging
 │   ├── data/                   # Market data pipeline (Alpaca + cache)
-│   ├── strategy/               # Strategy framework + ETF Momentum
+│   ├── ai/                     # Claude AI integration (CLI backend, client, research)
+│   ├── strategy/               # Strategy framework + 10 strategies
 │   ├── backtest/               # Backtesting engine + metrics
 │   ├── risk/                   # Position sizing, limits, validators
 │   ├── execution/              # Order management + Alpaca broker
 │   ├── monitoring/             # Trade journal, P&L tracker, alerts
 │   ├── dashboard/              # Dash web UI
 │   └── db/                     # SQLAlchemy models + database setup
-├── tests/                      # Unit tests (258 tests)
+├── tests/                      # Unit tests (600 tests)
 ├── docs/                       # Design documentation
 ├── data/                       # SQLite database (auto-created)
 ├── pyproject.toml              # Dependencies and build config
