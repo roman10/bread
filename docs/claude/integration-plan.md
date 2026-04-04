@@ -361,7 +361,7 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 - Pure technical analysis — no event enrichment (events already injected during signal review in Phase 2+3)
 - Shared circuit breaker across strategy analysis, signal review, and research
 
-**Tests: 20 new (total 596 across full unit suite)**
+**Tests: 20 new (total 600 across full unit suite)**
 
 ### Phase 5 (optional): mcode MCP Integration
 - Add `src/bread/ai/mcode_backend.py` — HTTP client for mcode MCP
@@ -372,7 +372,7 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
 
 ## Verification Plan
 
-1. **Unit tests** (596 passing): `pytest tests/unit/`
+1. **Unit tests** (600 passing): `pytest tests/unit/`
    - `test_cli_backend.py` — 23 tests: arg building, structured output, error handling, JSON fallback
    - `test_claude_client.py` — 37 tests: circuit breaker, signal review, batch review, research events, strategy analysis, usage logging
    - `test_prompts.py` — 16 tests: review prompts, batch prompts, research prompts, event context formatting
@@ -398,6 +398,69 @@ In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_rese
    - Verify `claude_analyst` strategy emits signals during tick cycle when enabled
    - Verify `claude_analyst` is skipped with warning when `claude.enabled: false`
    - Verify `strategy_analysis` entries appear in `claude_usage_log`
+
+---
+
+## Current Status (2026-04-05)
+
+All core Claude AI integration phases are **COMPLETE**:
+
+| Phase | Description | Status | Commit |
+|-------|-------------|--------|--------|
+| 1 | Foundation (CLI backend, circuit breaker, usage logging) | ✅ Done | ec2a98a |
+| 2 | Signal Review (batch review, advisory/gating, fail-open) | ✅ Done | 1311ebd |
+| 3 | Event Monitoring (web search, scheduler, alert enrichment) | ✅ Done | 1dfa954 |
+| 3b | Dashboard Event Display (AG Grid, severity colors) | ✅ Done | 5aa86f4 |
+| 4 | Claude Strategy (claude_analyst, batched analysis) | ✅ Done | cd37cd0 |
+| 5 | mcode MCP Integration | ⬜ Deferred | — |
+
+**Module stats:** ~1,430 LOC in `src/bread/ai/`, 252 LOC in `strategy/claude_analyst.py`, 600 unit tests passing, 7 AI-specific test files.
+
+**Everything is disabled by default** (`claude.enabled: false`). No live paper testing has been done yet.
+
+---
+
+## Recommended Next Step: Paper Trading Validation
+
+### Why this is the right next step
+
+All code is written and unit-tested, but the integration has never run against a real Claude CLI in a live tick loop. Before adding more features (mcode, regime detection, journaling), we need confidence that the existing 4 phases actually work end-to-end.
+
+### What to do
+
+1. **Smoke test the CLI backend** — Run `claude -p "What is 2+2?" --output-format json` manually and verify bread's `CliBackend` can parse the response.
+
+2. **Enable Claude in paper config** — Set `claude.enabled: true` in `config/paper.yaml` (keep `review_mode: "advisory"` so Claude can't block trades).
+
+3. **Run a paper trading session** — `bread run --mode paper` during market hours. Verify:
+   - Claude review logs appear for BUY signals
+   - `claude_usage_log` table records calls with model/duration/success
+   - Circuit breaker activates if CLI is unavailable, then recovers
+   - Tick time stays under 15 minutes
+   - Trading continues normally when Claude times out or errors
+
+4. **Enable event research** — Set `research_enabled: true`, run for a few hours. Verify:
+   - `event_alerts` table gets populated
+   - Event context appears in subsequent signal review prompts
+   - High-severity events trigger Discord alerts (if `alerts.on_research: true`)
+
+5. **Enable claude_analyst strategy** — Add to active strategies in paper config. Verify:
+   - Strategy emits signals during tick cycle
+   - `strategy_analysis` entries appear in usage log
+   - Signals integrate correctly with risk manager and signal review
+
+6. **Collect metrics** — After 1-2 trading days, review:
+   - Average CLI call latency (target: <15s for review, <60s for research)
+   - Circuit breaker activation frequency
+   - Claude approval rate vs risk manager approval rate (advisory mode)
+   - Event alert quality (noise vs actionable events)
+
+### Success criteria
+
+- Zero trading disruptions from Claude integration (fail-open works)
+- CLI latency within tick budget (<15s for reviews)
+- Event alerts contain relevant, non-hallucinated market events
+- Claude analyst strategy produces reasonable BUY/SELL signals
 
 ---
 
