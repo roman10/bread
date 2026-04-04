@@ -42,23 +42,28 @@ bread is a fully automated Python swing trading bot (ETF momentum strategies, Al
 ```
 bread tick loop (every 15 min)
     │
-    ├─ [Strategy.evaluate()] ──────── ClaudeStrategy calls CLI
+    ├─ [Strategy.evaluate()] ──────── ClaudeStrategy calls CLI (Phase 4)
     │                                   claude -p "analyze {data}" --json-schema {...}
     │
     ├─ [ExecutionEngine.process_signals()]
     │   │
-    │   ├── risk_manager.evaluate()     (existing, deterministic)
+    │   ├── risk_manager.evaluate()        (existing, deterministic)
     │   │
-    │   └── claude_client.review_signal()  (NEW)
+    │   ├── get_active_alerts()            query event_alerts table for context
+    │   │
+    │   └── claude_client.review_signal()  approve/reject with event context
     │         │
     │         └── CLI: claude -p "review this signal" --json-schema {approve/reject}
     │
     └─ [broker.submit_bracket_order()]
 
 
-Background thread (every 2-4 hours):
-    EventMonitor.scan()
-        └── CLI: claude -p "search for events affecting {symbols}" --allowedTools "WebSearch"
+APScheduler IntervalTrigger (every 4 hours, market hours only):
+    run_research_scan()
+        └── claude_client.research_events()
+              └── CLI: claude -p "search for events" --allowedTools "WebSearch,WebFetch"
+              └── store results → event_alerts table
+              └── notify high-severity events via Discord
 ```
 
 ---
@@ -72,35 +77,37 @@ Background thread (every 2-4 hours):
 **Feasible: YES, highest value** — Clean insertion at `engine.py:214-228` (between risk approval and order submission). Pass signal + portfolio context via CLI prompt, get structured `{approved: bool, reasoning: str}` back via `--json-schema`. Advisory mode by default.
 
 ### Use Case 3: Event monitoring / online search
-**Feasible: YES** — CLI with `--allowedTools "WebSearch"` does web research. Run in background thread, store results, flag symbols for next tick. This is where Claude shines — qualitative analysis that rule-based systems can't do.
+**Feasible: YES** — CLI with `--allowedTools "WebSearch,WebFetch"` does web research. Run on APScheduler interval, store results in SQLite, surface via alerts and signal review enrichment. This is where Claude shines — qualitative analysis that rule-based systems can't do.
 
 ---
 
 ## Stack-Ranked Use Cases
 
-| Rank | Use Case | Value | Effort | Rationale |
-|------|----------|-------|--------|-----------|
-| 1 | **Signal review before execution** | HIGH | LOW | Clean insertion point; structured approve/reject; direct risk reduction |
-| 2 | **Event monitoring + web search** | HIGH | MEDIUM | Claude's unique strength; web search built into CLI; async-friendly |
-| 3 | **Claude-powered strategy** | MEDIUM | MEDIUM | Follows Strategy ABC; but prompt engineering intensive, non-deterministic |
-| 4 | **Trade narrative / journaling** | LOW | LOW | Nice-to-have enrichment; simple prompt, no schema needed |
-| 5 | **Market regime detection** | MEDIUM | HIGH | Could gate all strategies; powerful but hard to validate |
+| Rank | Use Case | Value | Effort | Status |
+|------|----------|-------|--------|--------|
+| 1 | **Signal review before execution** | HIGH | LOW | ✅ Phase 2 |
+| 2 | **Event monitoring + web search** | HIGH | MEDIUM | ✅ Phase 3 |
+| 3 | **Claude-powered strategy** | MEDIUM | MEDIUM | ⬜ Phase 4 |
+| 4 | **Trade narrative / journaling** | LOW | LOW | ⬜ Deferred |
+| 5 | **Market regime detection** | MEDIUM | HIGH | ⬜ Deferred |
 
 ---
 
 ## Foundation Module Design
 
-### New module: `src/bread/ai/`
+### Module: `src/bread/ai/`
 
 ```
 src/bread/ai/
-    __init__.py
-    cli_backend.py  # CliBackend — subprocess wrapper for `claude -p`
-    client.py       # ClaudeClient — orchestrator (circuit breaker, batching, usage tracking)
-    models.py       # Response dataclasses + JSON schemas for --json-schema
+    __init__.py      # Re-exports: ClaudeClient, CliResponse, EventAlert, MarketResearch, SignalReview, TradeContext
+    cli_backend.py   # CliBackend — subprocess wrapper for `claude -p`
+    client.py        # ClaudeClient — orchestrator (circuit breaker, batching, usage tracking)
+    models.py        # Response dataclasses + JSON schemas: CliResponse, TradeContext, SignalReview, EventAlert, MarketResearch
+    prompts.py       # System prompts + prompt builders for review and research
+    research.py      # Event monitoring — run_research_scan(), get_active_alerts(), symbol collection
 ```
 
-`ClaudeSettings` lives in `core/config.py` alongside `AlpacaSettings` (not a separate file — follows existing convention). Prompt templates go in `prompts.py` when needed in Phase 2.
+`ClaudeSettings` lives in `core/config.py` alongside `AlpacaSettings` (follows existing convention).
 
 ### `cli_backend.py` — Core Integration
 
@@ -147,42 +154,47 @@ Key behaviors:
 class ClaudeClient:
     def __init__(self, config: ClaudeSettings, session_factory):
         self._backend = CliBackend(config)
-        self._usage_tracker = UsageTracker(session_factory)  # Log calls to SQLite
+        self._session_factory = session_factory
         self._circuit_breaker = CircuitBreaker(max_failures=3, cooldown_seconds=300)
 
-    def review_signal(self, signal: Signal, context: TradeContext) -> SignalReview:
+    def review_signal(self, signal, context, event_alerts=None) -> SignalReview:
         """Ask Claude to review a trading signal. Returns approve/reject."""
 
-    def research_events(self, symbols: list[str]) -> MarketResearch:
-        """Web search for market-moving events affecting given symbols."""
+    def review_signals_batch(self, signals, context, event_alerts=None) -> list[SignalReview]:
+        """Batch-review multiple signals in one CLI call. Fail-open."""
 
-    def evaluate_market(self, universe_data: dict, positions: list) -> list[Signal]:
-        """Ask Claude to generate trading signals from market data."""
+    def research_events(self, symbols, held_symbols) -> MarketResearch:
+        """Web search for market-moving events. Uses WebSearch + WebFetch."""
+
+    def _call(self, prompt, *, json_schema, system_prompt, model, ...) -> CliResponse:
+        """Execute CLI call with circuit-breaker + usage logging."""
 ```
 
 ### `models.py` — Response Types + JSON Schemas
 
 ```python
 @dataclass(frozen=True)
-class SignalReview:
+class SignalReview:          # Phase 1 — approve/reject with confidence
     approved: bool
     confidence: float        # 0.0-1.0
     reasoning: str
     risk_flags: list[str]
 
-    @classmethod
-    def json_schema(cls) -> dict:
-        """Schema for --json-schema flag."""
-        return {
-            "type": "object",
-            "properties": {
-                "approved": {"type": "boolean"},
-                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                "reasoning": {"type": "string"},
-                "risk_flags": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["approved", "confidence", "reasoning", "risk_flags"],
-        }
+@dataclass(frozen=True)
+class EventAlert:            # Phase 3 — single market-moving event
+    symbol: str
+    severity: str            # "high" | "medium" | "low" | "none"
+    headline: str
+    details: str
+    event_type: str          # "earnings" | "fda" | "analyst" | "macro" | "sector" | "other"
+    source: str
+
+@dataclass(frozen=True)
+class MarketResearch:        # Phase 3 — research scan response
+    events: list[EventAlert]
+    scan_summary: str
+
+# All models have: json_schema() classmethod, from_dict() with defensive type coercion
 ```
 
 ### Key Design Decisions
@@ -197,7 +209,7 @@ class SignalReview:
 
 5. **Batch multiple signals per CLI call** — If 3 BUY signals pass risk validation, don't spawn 3 separate CLI processes (30s). Instead, batch them into one prompt ("Review these 3 signals") and get a list of reviews back in one 10-15s call. Reduces latency proportionally with signal count.
 
-6. **Synchronous in tick loop** — A single batched CLI call (5-15s) is negligible in a 15-min cycle. No async needed for Use Cases 1 & 2. Use Case 3 (event monitoring) runs in a background thread.
+6. **Synchronous in tick loop** — A single batched CLI call (5-15s) is negligible in a 15-min cycle. No async needed for Use Cases 1 & 2. Use Case 3 (event monitoring) runs on an APScheduler `IntervalTrigger`.
 
 7. **Usage tracking in SQLite** — New `claude_usage_log` table records every call (model, prompt length, duration, result). For monitoring usage patterns even though Max Plan is "unlimited."
 
@@ -222,21 +234,19 @@ claude:
   circuit_breaker_cooldown_seconds: 300
 ```
 
-In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
+In `core/config.py` — `ClaudeSettings` Pydantic model on `AppConfig`, `on_research: bool` on `AlertSettings`.
 
 ### Integration Points in Existing Code
 
-1. **`execution/engine.py:214-228`** — After `self._risk.evaluate()` approves, before `self._broker.submit_bracket_order()`. New: `if self._claude and self._config.claude.enabled: review = self._claude.review_signal(sig, context)`.
+1. **`execution/engine.py`** — Three-phase BUY loop: risk approval → `get_active_alerts()` for event context → `review_signals_batch()` with event enrichment → order submission. ✅ Done (Phase 2+3)
 
-2. **`app.py::run()` ~line 269** — Initialize `ClaudeClient`, pass to `ExecutionEngine`.
+2. **`app.py::run()`** — Initializes `ClaudeClient` when `claude.enabled`, passes to `ExecutionEngine`. Adds `event_research` scheduler job when `research_enabled`. Enriches BUY trade alerts with Claude reasoning. ✅ Done (Phase 2+3)
 
-3. **`app.py` scheduler** — Add optional research job: `_scheduler.add_job(research_tick, CronTrigger(hour="10,14"), ...)`.
+3. **`db/models.py`** — `ClaudeUsageLog` (all calls) + `EventAlertLog` (research events). ✅ Done (Phase 1+3)
 
-4. **`strategy/claude_analyst.py`** — New `@register("claude_analyst")` strategy using `ClaudeClient.evaluate_market()`.
+4. **`monitoring/alerts.py`** — `notify_event_alert()` for high-severity events, `notify_trade()` enriched with AI reasoning. ✅ Done (Phase 2+3)
 
-5. **`db/models.py`** — Add `ClaudeUsageLog` table.
-
-6. **`monitoring/alerts.py`** — Add Claude's reasoning to Discord trade notifications.
+5. **`strategy/claude_analyst.py`** — New `@register("claude_analyst")` strategy. ⬜ Phase 4
 
 ---
 
@@ -265,7 +275,7 @@ In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
 - `CircuitBreaker` uses `time.monotonic()` for clock-change-safe cooldown timing
 - `_log_usage()` swallows all exceptions — DB failures never block trading
 
-### Phase 2: Signal Review — COMPLETE
+### Phase 2: Signal Review — COMPLETE (1311ebd)
 **New files (2):**
 - `src/bread/ai/prompts.py` — `REVIEW_SYSTEM_PROMPT`, `BATCH_REVIEW_SYSTEM_PROMPT`, `build_single_review_prompt()`, `build_batch_review_prompt()`. Prompt templates extracted from `client.py` and centralized.
 - `tests/unit/test_prompts.py` — 7 tests: signal/context field presence, batch numbering, shared context, ordering instruction
@@ -289,7 +299,7 @@ In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
 
 **Tests: 28 new (total 68 across AI module + engine integration)**
 
-### Phase 3: Event Monitoring — COMPLETE
+### Phase 3: Event Monitoring — COMPLETE (1dfa954)
 **New files (3):**
 - `src/bread/ai/research.py` — `run_research_scan()` orchestrator (APScheduler job, not background thread), `collect_research_symbols()` (30-symbol cap, held first), `get_active_alerts()` (DB query for active high/medium events, fail-open). Private helpers: `_store_results()`, `_deactivate_stale_alerts()` (48h), `_send_high_severity_alerts()`
 - `tests/unit/test_research.py` — 14 tests: symbol collection, DB storage, staleness, alerts, fail-open
@@ -334,21 +344,37 @@ In `core/config.py` — add `ClaudeSettings` Pydantic model to `AppConfig`.
 
 ## Verification Plan
 
-1. **Unit tests**: Mock `subprocess.run`, verify CLI arg construction, JSON schema passing, timeout handling, circuit breaker behavior, usage logging
-2. **Integration test**: With Claude Code CLI installed, run a real `claude -p "What is 2+2?" --output-format json` and verify parsing
-3. **Manual test**: Run `bread run --mode paper` with `claude.enabled: true`:
+1. **Unit tests** (576 passing): `pytest tests/unit/`
+   - `test_cli_backend.py` — 23 tests: arg building, structured output, error handling, JSON fallback
+   - `test_claude_client.py` — 32 tests: circuit breaker, signal review, batch review, research events, usage logging
+   - `test_prompts.py` — 16 tests: review prompts, batch prompts, research prompts, event context formatting
+   - `test_research.py` — 15 tests: symbol collection, DB storage, staleness, alerts, fail-open
+   - `test_market_research_models.py` — 13 tests: EventAlert/MarketResearch dataclasses, schemas, validation
+   - `test_execution_engine.py` — 10 tests: advisory/gating modes, fail-open, review storage, mixed approvals
+
+2. **Type check**: `mypy src/` — strict mode, no errors
+
+3. **Integration test**: With Claude Code CLI installed, run a real `claude -p "What is 2+2?" --output-format json` and verify parsing
+
+4. **Manual test**: Run `bread run --mode paper` with `claude.enabled: true, claude.research_enabled: true`:
    - Verify Claude review logs appear for BUY signals
+   - Verify event context appears in review prompts when events exist
+   - Verify research scan logs appear on schedule (every N hours, market hours only)
+   - Verify `event_alerts` table populated with high/medium/low events
+   - Verify high-severity events trigger Discord alerts
    - Verify circuit breaker activates when CLI is unavailable
-   - Verify trading continues normally when Claude is disabled
-   - Verify `claude_usage_log` table records calls
+   - Verify trading continues normally when Claude is disabled or errors
+   - Verify `claude_usage_log` table records all calls (review + research)
    - Check that total tick time stays under 15 minutes
 
 ---
 
 ## What This Plan Does NOT Include (deferred)
 
-- Anthropic API SDK (ruled out due to cost — Max Plan only)
+- Anthropic API SDK (ruled out — Max Plan only)
 - mcode as required runtime dependency (optional in Phase 5)
 - Async architecture (overkill for 15-min tick cycle)
 - Backtesting with Claude (non-deterministic, expensive in time)
 - Auto-parameter tuning (premature optimization)
+- Event deduplication across research scans (same event stored per scan; acceptable for now)
+- Dashboard event display (deferred to Phase 3b)
