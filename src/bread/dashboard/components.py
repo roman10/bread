@@ -16,13 +16,15 @@ def make_kpi_card(
 ) -> dbc.Card:
     """Build a single KPI card."""
     return dbc.Card(
-        dbc.CardBody([
-            html.H6(title, className="card-title text-muted mb-1",
-                     style={"fontSize": "0.75rem"}),
-            html.H4(value, className=f"text-{color} mb-0",
-                     style={"fontWeight": "600"}),
-            html.Small(subtitle, className="text-muted") if subtitle else html.Span(),
-        ]),
+        dbc.CardBody(
+            [
+                html.H6(
+                    title, className="card-title text-muted mb-1", style={"fontSize": "0.75rem"}
+                ),
+                html.H4(value, className=f"text-{color} mb-0", style={"fontWeight": "600"}),
+                html.Small(subtitle, className="text-muted") if subtitle else html.Span(),
+            ]
+        ),
         className="h-100",
     )
 
@@ -54,6 +56,29 @@ def pnl_color(value: float) -> str:
     if value < 0:
         return "danger"
     return "secondary"
+
+
+def make_strategy_explanation(info: dict[str, str | list[str]]) -> list[object]:
+    """Build modal body content for a strategy explanation.
+
+    *info* keys: summary, what (list of steps), why, universe, effectiveness_good
+    (list), effectiveness_bad (list).
+    """
+    sections: list[object] = [
+        html.P(info["summary"], style={"fontSize": "1.05rem", "lineHeight": "1.6"}),
+        html.H6("What it does", className="text-info mt-3 mb-1"),
+        html.Ol([html.Li(step) for step in info["what"]]),
+        html.H6("Why it works", className="text-info mt-3 mb-1"),
+        html.P(info["why"]),
+        html.H6("Why these ETFs?", className="text-info mt-3 mb-1"),
+        html.P(info["universe"]),
+        html.H6("Effectiveness", className="text-info mt-3 mb-1"),
+        html.P("Works well when:", className="mb-1 fw-bold", style={"fontSize": "0.9rem"}),
+        html.Ul([html.Li(g) for g in info["effectiveness_good"]]),
+        html.P("Watch out:", className="mb-1 fw-bold", style={"fontSize": "0.9rem"}),
+        html.Ul([html.Li(b) for b in info["effectiveness_bad"]]),
+    ]
+    return sections
 
 
 def format_local_dt(

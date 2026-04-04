@@ -48,6 +48,7 @@ def create_app(config: AppConfig) -> dash.Dash:
         external_stylesheets=[dbc.themes.DARKLY],
         title="bread",
         update_title=None,
+        suppress_callback_exceptions=True,
     )
 
     # Store DashboardData on the Flask server for callback access
