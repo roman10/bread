@@ -268,6 +268,62 @@ class TestEvaluate:
         assert len(signals) == 1
         assert signals[0].strength == 1.0
 
+    def test_missing_columns_skipped(
+        self, config_path: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        """Symbols with missing indicator columns are skipped, not sent to Claude."""
+        claude = MagicMock()
+        claude.analyze_technicals.return_value = _make_analysis([])
+
+        s = ClaudeAnalyst(config_path, indicator_settings, claude_client=claude)
+        df = _make_df()
+        df = df.drop(columns=["rsi_14"])  # remove a required column
+        signals = s.evaluate({"SPY": df})
+
+        assert signals == []
+        claude.analyze_technicals.assert_not_called()
+
+    def test_empty_dataframe_skipped(
+        self, config_path: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        """Empty DataFrames are skipped without error."""
+        claude = MagicMock()
+        claude.analyze_technicals.return_value = _make_analysis([])
+
+        s = ClaudeAnalyst(config_path, indicator_settings, claude_client=claude)
+        empty_df = pd.DataFrame()
+        signals = s.evaluate({"SPY": empty_df})
+
+        assert signals == []
+        claude.analyze_technicals.assert_not_called()
+
+    def test_zero_atr_skips_signal(
+        self, config_path: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        """Signal skipped when ATR is zero (non-positive stop_loss_pct)."""
+        claude = MagicMock()
+        claude.analyze_technicals.return_value = _make_analysis(
+            [StrategyRecommendation("SPY", "BUY", 0.8, "Breakout")]
+        )
+
+        s = ClaudeAnalyst(config_path, indicator_settings, claude_client=claude)
+        signals = s.evaluate({"SPY": _make_df(atr=0.0)})
+
+        assert signals == []
+
+    def test_invalid_action_skipped(
+        self, config_path: Path, indicator_settings: IndicatorSettings
+    ) -> None:
+        """Non-actionable recommendations are filtered out."""
+        claude = MagicMock()
+        claude.analyze_technicals.return_value = _make_analysis(
+            [StrategyRecommendation("SPY", "HOLD", 0.0, "No setup")]
+        )
+
+        s = ClaudeAnalyst(config_path, indicator_settings, claude_client=claude)
+        signals = s.evaluate({"SPY": _make_df()})
+        assert signals == []
+
     def test_prompt_includes_date_and_symbols(
         self, config_path: Path, indicator_settings: IndicatorSettings
     ) -> None:
