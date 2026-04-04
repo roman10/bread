@@ -14,7 +14,7 @@ from bread.core.config import CONFIG_DIR
 from bread.dashboard.components import format_local_dt
 from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
-from bread.db.models import OrderLog, PortfolioSnapshot, SignalLog
+from bread.db.models import EventAlertLog, OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
 from bread.monitoring.journal import get_journal, get_journal_summary
 from bread.monitoring.tracker import get_daily_summaries, get_drawdown_series, get_period_pnl
@@ -147,9 +147,7 @@ class DashboardData:
                     "qty": str(o.qty),
                     "status": str(o.status).upper(),
                     "type": str(o.type).upper() if o.type else "",
-                    "submitted_at": format_local_dt(
-                        o.submitted_at, fmt="%Y-%m-%d %-I:%M %p %Z"
-                    ),
+                    "submitted_at": format_local_dt(o.submitted_at, fmt="%Y-%m-%d %-I:%M %p %Z"),
                 }
                 for o in orders
             ]
@@ -375,6 +373,35 @@ class DashboardData:
             }
             for r in rows
         ]
+
+    def get_recent_events(self, hours: int = 48) -> list[dict[str, object]]:
+        """Return recent event alerts for dashboard display."""
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        try:
+            with self._sf() as session:
+                rows = (
+                    session.execute(
+                        select(EventAlertLog)
+                        .where(EventAlertLog.scanned_at_utc >= cutoff)
+                        .order_by(EventAlertLog.scanned_at_utc.desc())
+                    )
+                    .scalars()
+                    .all()
+                )
+            return [
+                {
+                    "time": format_local_dt(r.scanned_at_utc, fmt="%Y-%m-%d %-I:%M %p %Z"),
+                    "symbol": r.symbol,
+                    "severity": r.severity.upper(),
+                    "headline": r.headline,
+                    "event_type": r.event_type,
+                    "details": r.details,
+                }
+                for r in rows
+            ]
+        except Exception:
+            logger.exception("Failed to fetch recent events")
+            return []
 
     def dispose(self) -> None:
         """Clean up database engine."""

@@ -476,6 +476,30 @@ _SIGNAL_COLS = [
     {"field": "reason", "headerName": "Reason", "flex": 1},
 ]
 
+_EVENT_COLS = [
+    {"field": "time", "headerName": "Time", "width": 170, "sort": "desc"},
+    {"field": "symbol", "headerName": "Symbol", "width": 80},
+    {
+        "field": "severity",
+        "headerName": "Severity",
+        "width": 100,
+        "cellStyle": {
+            "function": (
+                "params.value === 'HIGH' ? {'color': '#e74c3c'} : "
+                "params.value === 'MEDIUM' ? {'color': '#f39c12'} : "
+                "{'color': '#888'}"
+            )
+        },
+    },
+    {
+        "field": "headline",
+        "headerName": "Headline",
+        "flex": 1,
+        "tooltipField": "details",
+    },
+    {"field": "event_type", "headerName": "Type", "width": 100},
+]
+
 # -- Layout --
 
 layout = dbc.Container(
@@ -535,6 +559,12 @@ layout = dbc.Container(
             className="mb-2",
         ),
         html.Div(id="signals-table"),
+        html.H6("Event Alerts", className="text-muted mb-2 mt-4"),
+        html.Small(
+            "Detected by Claude's research scanner.",
+            className="text-muted d-block mb-2",
+        ),
+        html.Div(id="events-table"),
     ],
     fluid=True,
 )
@@ -744,6 +774,30 @@ def update_signals_table(strategy: str | None, _n: int) -> dag.AgGrid | html.P:
             "domLayout": "autoHeight",
             "pagination": True,
             "paginationPageSize": 15,
+        },
+        className="ag-theme-alpine-dark",
+        style={"width": "100%"},
+    )
+
+
+@callback(
+    Output("events-table", "children"),
+    Input("refresh-interval", "n_intervals"),
+)
+def update_events_table(_n: int) -> dag.AgGrid | html.P:
+    data = current_app.config["data"]
+    events = data.get_recent_events(hours=48)
+    if not events:
+        return html.P("No recent event alerts", className="text-muted")
+    return dag.AgGrid(
+        rowData=events,
+        columnDefs=_EVENT_COLS,
+        defaultColDef={"sortable": True, "resizable": True},
+        dashGridOptions={
+            "domLayout": "autoHeight",
+            "pagination": True,
+            "paginationPageSize": 10,
+            "tooltipShowDelay": 300,
         },
         className="ag-theme-alpine-dark",
         style={"width": "100%"},
