@@ -37,6 +37,28 @@ class ExecutionEngine:
         self._session_factory = session_factory
         self._positions: dict[str, Position] = {}
 
+    def _adjust_fill_price(self, raw_price: float, side: str) -> float:
+        """Apply paper trading cost model to a fill price.
+
+        Alpaca paper trading fills at quoted prices with no real spread or
+        slippage.  This simulates real-world friction by penalizing fills:
+        - BUY:  price * (1 + slippage_pct)  — we pay more than quoted
+        - SELL: price * (1 - slippage_pct)  — we receive less than quoted
+
+        Only applied when mode='paper' and paper_cost.enabled is True.
+        Live-mode fills already include real market friction.
+        """
+        if self._config.mode != "paper":
+            return raw_price
+        cost = self._config.execution.paper_cost
+        if not cost.enabled:
+            return raw_price
+
+        if side == "BUY":
+            return raw_price * (1.0 + cost.slippage_pct)
+        else:  # SELL
+            return raw_price * (1.0 - cost.slippage_pct)
+
     def reconcile(self) -> None:
         """Sync local state with broker positions.
 
@@ -116,13 +138,30 @@ class ExecutionEngine:
                     order.status = new_status
                     if new_status == "FILLED":
                         if broker_order.filled_avg_price is not None:
-                            order.filled_price = float(broker_order.filled_avg_price)
+                            raw_price = float(broker_order.filled_avg_price)
+                            order.raw_filled_price = raw_price
+                            # Apply paper trading cost model (slippage/spread).
+                            # In live mode, _adjust_fill_price returns raw_price unchanged.
+                            order.filled_price = self._adjust_fill_price(
+                                raw_price, order.side,
+                            )
                         order.filled_at_utc = broker_order.filled_at
-                        logger.info(
-                            "Order %s filled: %s %s @ %.2f",
-                            order.broker_order_id, order.side, order.symbol,
-                            order.filled_price,
-                        )
+                        if (
+                            order.raw_filled_price is not None
+                            and order.filled_price is not None
+                            and order.raw_filled_price != order.filled_price
+                        ):
+                            logger.info(
+                                "Order %s filled: %s %s @ %.2f (raw: %.2f)",
+                                order.broker_order_id, order.side, order.symbol,
+                                order.filled_price, order.raw_filled_price,
+                            )
+                        else:
+                            logger.info(
+                                "Order %s filled: %s %s @ %s",
+                                order.broker_order_id, order.side, order.symbol,
+                                f"{order.filled_price:.2f}" if order.filled_price else "N/A",
+                            )
                     elif new_status in ("CANCELLED", "REJECTED"):
                         logger.info(
                             "Order %s %s: %s %s",
@@ -267,19 +306,74 @@ class ExecutionEngine:
         account = self._broker.get_account()
         return float(account.equity or 0)
 
+    def _get_cumulative_cost_adjustment(self) -> float:
+        """Total P&L impact of paper trading cost adjustments.
+
+        Sums the per-order cost drag (slippage + commission) across all filled
+        orders that have both raw and adjusted prices.  Returns a negative
+        number representing the realistic cost friction that Alpaca's paper
+        account doesn't reflect.
+        """
+        if self._config.mode != "paper":
+            return 0.0
+        cost = self._config.execution.paper_cost
+        if not cost.enabled:
+            return 0.0
+
+        try:
+            with self._session_factory() as session:
+                filled_orders = session.execute(
+                    select(OrderLog).where(
+                        OrderLog.status == "FILLED",
+                        OrderLog.raw_filled_price.isnot(None),
+                        OrderLog.filled_price.isnot(None),
+                    )
+                ).scalars().all()
+
+                total = 0.0
+                for order in filled_orders:
+                    raw = order.raw_filled_price
+                    adj = order.filled_price
+                    if raw is None or adj is None:
+                        continue  # already filtered by SQL, but satisfies mypy
+                    # BUY: we paid more → (raw - adjusted) * qty is negative
+                    # SELL: we received less → (adjusted - raw) * qty is negative
+                    if order.side == "BUY":
+                        total += (raw - adj) * order.qty
+                    else:
+                        total += (adj - raw) * order.qty
+
+                # Commission impact (per side, so each filled order is one side)
+                total -= len(filled_orders) * cost.commission_per_trade
+
+                return total
+        except Exception:
+            logger.exception("Failed to compute cumulative cost adjustment")
+            return 0.0
+
     def save_snapshot(self) -> None:
-        """Persist a PortfolioSnapshot to the database."""
+        """Persist a PortfolioSnapshot to the database.
+
+        In paper mode, adjusts equity to reflect simulated friction costs.
+        Alpaca's paper account doesn't account for our slippage/commission
+        model, so we subtract the cumulative cost drag from the reported equity.
+        """
         try:
             account = self._broker.get_account()
             equity = float(account.equity or 0)
             cash = float(account.cash or 0)
             daily_pnl = equity - float(account.last_equity or equity)
 
+            # Adjust for paper trading cost model
+            cost_adjustment = self._get_cumulative_cost_adjustment()
+            adjusted_equity = equity + cost_adjustment  # cost_adjustment is negative
+            adjusted_cash = cash + cost_adjustment
+
             snapshot = PortfolioSnapshot(
                 timestamp_utc=datetime.now(UTC),
-                equity=equity,
-                cash=cash,
-                positions_value=equity - cash,
+                equity=adjusted_equity,
+                cash=adjusted_cash,
+                positions_value=adjusted_equity - adjusted_cash,
                 open_positions=len(self._positions),
                 daily_pnl=daily_pnl,
             )

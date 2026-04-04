@@ -127,3 +127,19 @@ class TestConfigLoading:
         )
         with pytest.raises(ConfigError):
             load_config(config_dir)
+
+
+class TestPaperCostSettings:
+    def test_paper_cost_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk")
+        monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "sk")
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        cfg = load_config()
+        assert cfg.execution.paper_cost.enabled is True
+        assert cfg.execution.paper_cost.slippage_pct == 0.001
+        assert cfg.execution.paper_cost.commission_per_trade == 0.0
+
+    def test_paper_cost_validation_rejects_negative(self) -> None:
+        from bread.core.config import PaperCostSettings
+        with pytest.raises(Exception):  # pydantic ValidationError
+            PaperCostSettings(slippage_pct=-0.01)

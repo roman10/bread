@@ -32,7 +32,28 @@ def get_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine)
 
 
+def migrate_db(engine: Engine) -> None:
+    """Apply incremental schema migrations.
+
+    SQLAlchemy create_all only adds new tables, not new columns on existing
+    tables.  This function handles column additions for running databases.
+    """
+    with engine.connect() as conn:
+        raw_conn = conn.connection
+        cursor = raw_conn.cursor()
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(orders)").fetchall()}
+        if "raw_filled_price" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN raw_filled_price REAL")
+            cursor.execute(
+                "UPDATE orders SET raw_filled_price = filled_price"
+                " WHERE filled_price IS NOT NULL"
+            )
+            raw_conn.commit()
+            logger.info("Migration: added raw_filled_price column to orders table")
+
+
 def init_db(engine: Engine) -> None:
-    """Create all tables."""
+    """Create all tables and run migrations."""
     Base.metadata.create_all(engine)
+    migrate_db(engine)
     logger.info("Database tables created")

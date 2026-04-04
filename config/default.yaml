@@ -98,6 +98,10 @@ risk:
 execution:
   tick_interval_minutes: 15
   take_profit_ratio: 2.0
+  paper_cost:
+    enabled: true
+    slippage_pct: 0.001        # 0.1% — matches backtest default
+    commission_per_trade: 0.0  # per side; Alpaca is commission-free
 
 alerts:
   enabled: false

@@ -127,9 +127,23 @@ class RiskSettings(BaseModel):
     )
 
 
+class PaperCostSettings(BaseModel):
+    """Cost model applied to paper trading fills to simulate real-world friction.
+
+    Alpaca paper trading fills at quoted prices with no spread or slippage.
+    These adjustments make paper P&L more realistic and consistent with
+    the backtest cost model (BacktestSettings).
+    """
+
+    enabled: bool = True
+    slippage_pct: float = Field(default=0.001, ge=0)  # 0.1%, matches backtest default
+    commission_per_trade: float = Field(default=0.0, ge=0)  # per side
+
+
 class ExecutionSettings(BaseModel):
     tick_interval_minutes: int = Field(default=15, ge=1)
     take_profit_ratio: float = Field(default=2.0, gt=0)
+    paper_cost: PaperCostSettings = Field(default_factory=PaperCostSettings)
 
 
 class AlertSettings(BaseModel):

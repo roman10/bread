@@ -240,3 +240,44 @@ class TestGetJournalSummary:
         assert summary["best_trade"] == 200.0
         assert summary["worst_trade"] == -50.0
         assert summary["expectancy"] == 75.0  # 150/2
+
+
+class TestJournalWithCostAdjustedPrices:
+    """Verify journal P&L uses filled_price (cost-adjusted), not raw_filled_price."""
+
+    def test_journal_pnl_uses_adjusted_prices(self) -> None:
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+
+        # Simulate paper cost adjustment: BUY adjusted up, SELL adjusted down
+        raw_buy, adj_buy = 500.0, 500.5    # paid more
+        raw_sell, adj_sell = 510.0, 509.49  # received less
+
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="buy-adj",
+                symbol="SPY", side="BUY", qty=10, status="FILLED",
+                raw_filled_price=raw_buy, filled_price=adj_buy,
+                strategy_name="etf_momentum", reason="test",
+                created_at_utc=t1, filled_at_utc=t1,
+            ))
+            session.add(OrderLog(
+                broker_order_id="sell-adj",
+                symbol="SPY", side="SELL", qty=10, status="FILLED",
+                raw_filled_price=raw_sell, filled_price=adj_sell,
+                strategy_name="etf_momentum", reason="test",
+                created_at_utc=t2, filled_at_utc=t2,
+            ))
+            session.commit()
+
+        with sf() as session:
+            entries = get_journal(session)
+
+        assert len(entries) == 1
+        e = entries[0]
+        # P&L should use adjusted prices, not raw
+        assert e.entry_price == adj_buy
+        assert e.exit_price == adj_sell
+        expected_pnl = round((adj_sell - adj_buy) * 10, 2)
+        assert e.pnl == expected_pnl

@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -447,7 +448,9 @@ class TestReconcileOrders:
             order = session.execute(select(OrderLog)).scalars().first()
             assert order is not None
             assert order.status == "FILLED"
-            assert order.filled_price == 502.50
+            # Paper cost model adjusts fill: raw * (1 + 0.001) for BUY
+            assert order.raw_filled_price == 502.50
+            assert order.filled_price == pytest.approx(502.50 * 1.001)
             # SQLite strips tzinfo on round-trip
             assert order.filled_at_utc == fill_time.replace(tzinfo=None)
 
@@ -593,3 +596,168 @@ class TestProcessSignalsExceptionPaths:
         # SPY fails, QQQ succeeds
         assert "SPY" not in engine._positions
         assert "QQQ" in engine._positions
+
+
+class TestPaperCostAdjustment:
+    """Tests for the paper trading cost simulation layer.
+
+    Alpaca paper trading fills at quoted prices with no spread/slippage.
+    The cost model adjusts fill prices to reflect real-world friction:
+    - BUY:  price * (1 + slippage_pct)  — we pay more
+    - SELL: price * (1 - slippage_pct)  — we receive less
+    """
+
+    def test_adjust_fill_price_buy_paper(self, monkeypatch) -> None:
+        engine, _, _, _ = _make_engine(monkeypatch)
+        adjusted = engine._adjust_fill_price(500.0, "BUY")
+        assert adjusted == pytest.approx(500.0 * 1.001)
+
+    def test_adjust_fill_price_sell_paper(self, monkeypatch) -> None:
+        engine, _, _, _ = _make_engine(monkeypatch)
+        adjusted = engine._adjust_fill_price(500.0, "SELL")
+        assert adjusted == pytest.approx(500.0 * 0.999)
+
+    def test_adjust_fill_price_live_unchanged(self, monkeypatch) -> None:
+        engine, _, _, _ = _make_engine(monkeypatch)
+        engine._config.mode = "live"
+        assert engine._adjust_fill_price(500.0, "BUY") == 500.0
+        assert engine._adjust_fill_price(500.0, "SELL") == 500.0
+
+    def test_adjust_fill_price_disabled(self, monkeypatch) -> None:
+        engine, _, _, _ = _make_engine(monkeypatch)
+        engine._config.execution.paper_cost.enabled = False
+        assert engine._adjust_fill_price(500.0, "BUY") == 500.0
+        assert engine._adjust_fill_price(500.0, "SELL") == 500.0
+
+    def test_reconcile_stores_raw_and_adjusted(self, monkeypatch) -> None:
+        """BUY order should have raw_filled_price < filled_price (slippage)."""
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-buy", symbol="SPY", side="BUY", qty=10,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-buy", status="filled", filled_avg_price="500.00",
+                filled_at=now,
+            ),
+        ]
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.raw_filled_price == 500.0
+            assert order.filled_price == pytest.approx(500.0 * 1.001)
+
+    def test_reconcile_sell_adjusts_downward(self, monkeypatch) -> None:
+        """SELL order should have filled_price < raw_filled_price."""
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="order-sell", symbol="SPY", side="SELL", qty=10,
+                status="PENDING", strategy_name="test", reason="test",
+                created_at_utc=now,
+            ))
+            session.commit()
+
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-sell", status="filled", filled_avg_price="510.00",
+                filled_at=now,
+            ),
+        ]
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.raw_filled_price == 510.0
+            assert order.filled_price == pytest.approx(510.0 * 0.999)
+
+    def test_snapshot_applies_cost_adjustment(self, monkeypatch) -> None:
+        """In paper mode, snapshot equity should be reduced by cumulative cost drag."""
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+
+        # Insert a filled BUY order with cost adjustment
+        raw_buy = 500.0
+        adj_buy = 500.0 * 1.001  # paid more
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=raw_buy, filled_price=adj_buy,
+            ))
+            session.commit()
+
+        engine.save_snapshot()
+
+        # Expected cost drag: (raw_buy - adj_buy) * 10 = -5.0
+        expected_drag = (raw_buy - adj_buy) * 10
+        with sf() as session:
+            snap = session.execute(select(PortfolioSnapshot)).scalars().first()
+            assert snap is not None
+            assert snap.equity == pytest.approx(10_000.0 + expected_drag)
+
+    def test_snapshot_no_adjustment_live(self, monkeypatch) -> None:
+        """Live mode snapshot should equal Alpaca-reported equity."""
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        engine._config.mode = "live"
+        now = datetime.now(UTC)
+
+        # Insert a filled order (live mode should ignore cost adjustment)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=500.0, filled_price=500.5,
+            ))
+            session.commit()
+
+        engine.save_snapshot()
+
+        with sf() as session:
+            snap = session.execute(select(PortfolioSnapshot)).scalars().first()
+            assert snap is not None
+            assert snap.equity == 10_000.0  # no adjustment
+
+    def test_cumulative_adjustment_empty_db(self, monkeypatch) -> None:
+        engine, _, _, _ = _make_engine(monkeypatch)
+        assert engine._get_cumulative_cost_adjustment() == 0.0
+
+    def test_cumulative_adjustment_with_commission(self, monkeypatch) -> None:
+        engine, _, _, sf = _make_engine(monkeypatch)
+        engine._config.execution.paper_cost.commission_per_trade = 1.0
+        now = datetime.now(UTC)
+
+        # One BUY and one SELL, each with $1 commission
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=500.0, filled_price=500.5,
+            ))
+            session.add(OrderLog(
+                broker_order_id="s1", symbol="SPY", side="SELL", qty=10,
+                status="FILLED", strategy_name="test", reason="test",
+                created_at_utc=now, filled_at_utc=now,
+                raw_filled_price=510.0, filled_price=509.49,
+            ))
+            session.commit()
+
+        adj = engine._get_cumulative_cost_adjustment()
+        # BUY drag: (500.0 - 500.5) * 10 = -5.0
+        # SELL drag: (509.49 - 510.0) * 10 = -5.1
+        # Commission: 2 orders * $1 = -2.0
+        expected = (500.0 - 500.5) * 10 + (509.49 - 510.0) * 10 - 2 * 1.0
+        assert adj == pytest.approx(expected)

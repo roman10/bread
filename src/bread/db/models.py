@@ -65,6 +65,7 @@ class OrderLog(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     stop_loss_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    raw_filled_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     filled_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     strategy_name: Mapped[str] = mapped_column(String, nullable=False)
     reason: Mapped[str] = mapped_column(String, nullable=False)
