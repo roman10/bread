@@ -110,9 +110,35 @@ class AlpacaBroker:
         except Exception as exc:
             raise OrderError(f"Failed to submit bracket order for {symbol}: {exc}") from exc
 
+    def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """Cancel all open orders for a symbol. Returns count cancelled.
+
+        Never raises — failures are logged so callers can proceed.
+        """
+        try:
+            open_orders = self.get_orders(status="open")
+        except Exception:
+            logger.warning("Failed to fetch open orders for cancellation of %s", symbol)
+            return 0
+        cancelled = 0
+        for order in open_orders:
+            if order.symbol == symbol:
+                try:
+                    self._client.cancel_order_by_id(order.id)
+                    logger.info("Cancelled order %s for %s", order.id, symbol)
+                    cancelled += 1
+                except Exception:
+                    logger.warning("Failed to cancel order %s for %s", order.id, symbol)
+        return cancelled
+
     def close_position(self, symbol: str) -> str | None:
-        """Close a position by symbol. Returns order ID or None if no position."""
+        """Close a position by symbol. Returns order ID or None if no position.
+
+        Cancels any open orders (e.g. bracket OCO legs) for the symbol first,
+        since they hold shares and block the close.
+        """
         logger.info("Closing position: %s", symbol)
+        self.cancel_orders_for_symbol(symbol)
         try:
             order = self._client.close_position(symbol_or_asset_id=symbol)
             order_id = str(order.id)  # type: ignore[union-attr]

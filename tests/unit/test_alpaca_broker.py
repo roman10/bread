@@ -99,6 +99,7 @@ class TestAlpacaBroker:
     ) -> None:
         config = _make_config(monkeypatch)
         mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = []
         mock_order = SimpleNamespace(id="close-order-456")
         mock_client.close_position.return_value = mock_order
 
@@ -113,12 +114,55 @@ class TestAlpacaBroker:
     ) -> None:
         config = _make_config(monkeypatch)
         mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = []
         mock_client.close_position.side_effect = Exception("position not found")
 
         broker = AlpacaBroker(config)
         result = broker.close_position("SPY")
 
         assert result is None
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_cancels_open_orders_first(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bracket OCO legs hold shares; they must be cancelled before close."""
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = [
+            SimpleNamespace(id="leg-1", symbol="XLE"),
+            SimpleNamespace(id="leg-2", symbol="XLE"),
+            SimpleNamespace(id="leg-3", symbol="SPY"),  # different symbol, not cancelled
+        ]
+        mock_client.close_position.return_value = SimpleNamespace(id="close-order-789")
+
+        broker = AlpacaBroker(config)
+        order_id = broker.close_position("XLE")
+
+        assert order_id == "close-order-789"
+        assert mock_client.cancel_order_by_id.call_count == 2
+        cancelled_ids = [call.args[0] for call in mock_client.cancel_order_by_id.call_args_list]
+        assert "leg-1" in cancelled_ids
+        assert "leg-2" in cancelled_ids
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_cancel_failure_does_not_block_close(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If cancelling an order fails, the close attempt should still proceed."""
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = [
+            SimpleNamespace(id="leg-1", symbol="XLE"),
+        ]
+        mock_client.cancel_order_by_id.side_effect = Exception("cancel failed")
+        mock_client.close_position.return_value = SimpleNamespace(id="close-order-789")
+
+        broker = AlpacaBroker(config)
+        order_id = broker.close_position("XLE")
+
+        assert order_id == "close-order-789"
+        mock_client.close_position.assert_called_once()
 
     @patch("bread.execution.alpaca_broker.TradingClient")
     def test_get_positions(
