@@ -146,6 +146,22 @@ class TestAlpacaBroker:
         assert "leg-2" in cancelled_ids
 
     @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_get_orders_failure_does_not_block_close(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If fetching open orders fails, the close attempt should still proceed."""
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.side_effect = Exception("API timeout")
+        mock_client.close_position.return_value = SimpleNamespace(id="close-order-789")
+
+        broker = AlpacaBroker(config)
+        order_id = broker.close_position("XLE")
+
+        assert order_id == "close-order-789"
+        mock_client.cancel_order_by_id.assert_not_called()
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
     def test_close_position_cancel_failure_does_not_block_close(
         self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
