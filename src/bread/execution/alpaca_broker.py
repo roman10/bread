@@ -10,7 +10,14 @@ from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeIn
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    Retrying,
+    before_sleep_log,
+    retry_if_exception,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 from urllib3.exceptions import ProtocolError
 
 from bread.core.exceptions import ExecutionError, OrderError
@@ -29,6 +36,21 @@ _read_retrier = Retrying(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=4),
     reraise=True,
+)
+
+
+def _is_held_for_orders_error(exc: BaseException) -> bool:
+    """True when Alpaca rejects because shares are still held by a pending cancel."""
+    msg = str(exc).lower()
+    return "insufficient qty available for order" in msg
+
+
+_close_retrier = Retrying(
+    retry=retry_if_exception(_is_held_for_orders_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=1),
+    reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 
@@ -150,7 +172,9 @@ class AlpacaBroker:
         logger.info("Closing position: %s", symbol)
         self.cancel_orders_for_symbol(symbol)
         try:
-            order = self._client.close_position(symbol_or_asset_id=symbol)
+            order = _close_retrier(
+                self._client.close_position, symbol_or_asset_id=symbol
+            )
             order_id = str(order.id)  # type: ignore[union-attr]
             logger.info("Close order submitted: %s order_id=%s", symbol, order_id)
             return order_id

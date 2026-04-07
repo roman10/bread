@@ -217,6 +217,73 @@ class TestAlpacaBroker:
         with pytest.raises(OrderError, match="take_profit_price"):
             broker.submit_bracket_order("SPY", 10, 475.0, -1.0)
 
+    @patch("bread.execution.alpaca_broker._close_retrier.wait", new=lambda *a, **kw: 0)
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_retries_on_held_for_orders(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Race condition: cancellation not yet processed, retry succeeds."""
+        from alpaca.common.exceptions import APIError
+
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = [
+            SimpleNamespace(id="leg-1", symbol="XLE"),
+        ]
+        held_error = APIError(
+            '{"code":40310000,"message":"insufficient qty available for order'
+            ' (requested: 162, available: 0)"}'
+        )
+        mock_client.close_position.side_effect = [
+            held_error,
+            SimpleNamespace(id="close-order-999"),
+        ]
+
+        broker = AlpacaBroker(config)
+        order_id = broker.close_position("XLE")
+
+        assert order_id == "close-order-999"
+        assert mock_client.close_position.call_count == 2
+
+    @patch("bread.execution.alpaca_broker._close_retrier.wait", new=lambda *a, **kw: 0)
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_held_for_orders_exhausts_retries(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If held-for-orders persists beyond retries, raise OrderError."""
+        from alpaca.common.exceptions import APIError
+
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = []
+        held_error = APIError(
+            '{"code":40310000,"message":"insufficient qty available for order'
+            ' (requested: 162, available: 0)"}'
+        )
+        mock_client.close_position.side_effect = held_error
+
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="Failed to close position"):
+            broker.close_position("XLE")
+
+        assert mock_client.close_position.call_count == 3
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_position_does_not_retry_unrelated_errors(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Errors that aren't held-for-orders should fail immediately."""
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.get_orders.return_value = []
+        mock_client.close_position.side_effect = Exception("account restricted")
+
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="Failed to close position"):
+            broker.close_position("XLE")
+
+        assert mock_client.close_position.call_count == 1
+
     @patch("bread.execution.alpaca_broker.TradingClient")
     def test_get_positions(
         self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
