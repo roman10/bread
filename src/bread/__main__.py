@@ -97,82 +97,92 @@ def backtest_cmd(
         # 2. Initialize logging
         setup_logging(config.app.log_level)
 
-        # 3. Auto-init DB
+        # 3. Auto-init DB (engine kept alive for cache session in step 8)
         engine = get_engine(config.db.path)
         try:
             init_db(engine)
+
+            # 4. Match strategy name (skip disabled strategies)
+            strat_settings = None
+            for s in config.strategies:
+                if s.name == strategy and s.enabled:
+                    strat_settings = s
+                    break
+            if strat_settings is None:
+                available = [s.name for s in config.strategies if s.enabled]
+                typer.echo(
+                    f"Error: Unknown strategy '{strategy}'. Available: {available}",
+                    err=True,
+                )
+                raise SystemExit(1)
+
+            # 5. Resolve config path
+            cfg_path = strat_settings.config_path or f"strategies/{strat_settings.name}.yaml"
+            strategy_config_path = CONFIG_DIR / cfg_path
+
+            # 6. Look up strategy class from registry
+            import bread.strategy  # noqa: F401
+            from bread.strategy.base import load_strategy_config
+            from bread.strategy.registry import get_strategy
+
+            strategy_cls = get_strategy(strategy)
+
+            # 7. Resolve universe provider references and instantiate strategy
+            from bread.data.universe import (
+                UNIVERSE_CACHE_DIR,
+                UniverseRegistry,
+                resolve_strategy_universe,
+            )
+
+            universe_registry = UniverseRegistry(
+                config.universe_providers, UNIVERSE_CACHE_DIR
+            )
+            strat_cfg = load_strategy_config(strategy_config_path)
+            resolved_universe = resolve_strategy_universe(
+                strat_cfg, universe_registry, strategy
+            )
+
+            strat_instance = strategy_cls(  # type: ignore[call-arg]
+                strategy_config_path, config.indicators, universe=resolved_universe,
+            )
+
+            # 8. Create data feed with caching, load universe
+            from bread.backtest.data_feed import HistoricalDataFeed
+            from bread.data.cache import CachingDataProvider
+
+            provider = AlpacaDataProvider(config)
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+
+            session_factory = get_session_factory(engine)
+            with session_factory() as session:
+                cached_provider = CachingDataProvider(provider, session)
+                feed = HistoricalDataFeed(cached_provider, config)
+                universe_data = feed.load_universe(
+                    strat_instance.universe, start_date, end_date,
+                )
+
+            # 9. Run backtest
+            from bread.backtest.engine import BacktestEngine
+
+            bt = BacktestEngine(strat_instance, config)
+            result = bt.run(universe_data, start_date, end_date)
+
+            # 10. Print metrics summary
+            m = result.metrics
+            typer.echo(f"Backtest: {strategy} | {start} to {end}")
+            typer.echo("---")
+            typer.echo(f"Total return:    {m['total_return_pct']:>8.2f}%")
+            typer.echo(f"CAGR:            {m['cagr_pct']:>8.2f}%")
+            typer.echo(f"Sharpe ratio:    {m['sharpe_ratio']:>8.2f}")
+            typer.echo(f"Sortino ratio:   {m['sortino_ratio']:>8.2f}")
+            typer.echo(f"Max drawdown:    {m['max_drawdown_pct']:>8.2f}%")
+            typer.echo(f"Win rate:        {m['win_rate_pct']:>8.2f}%")
+            typer.echo(f"Profit factor:   {m['profit_factor']:>8.2f}")
+            typer.echo(f"Total trades:    {m['total_trades']:>8d}")
+            typer.echo(f"Avg holding days:{m['avg_holding_days']:>8.2f}")
         finally:
             engine.dispose()
-
-        # 4. Match strategy name (skip disabled strategies)
-        strat_settings = None
-        for s in config.strategies:
-            if s.name == strategy and s.enabled:
-                strat_settings = s
-                break
-        if strat_settings is None:
-            available = [s.name for s in config.strategies if s.enabled]
-            typer.echo(f"Error: Unknown strategy '{strategy}'. Available: {available}", err=True)
-            raise SystemExit(1)
-
-        # 5. Resolve config path
-        cfg_path = strat_settings.config_path or f"strategies/{strat_settings.name}.yaml"
-        strategy_config_path = CONFIG_DIR / cfg_path
-
-        # 6. Look up strategy class from registry
-        import bread.strategy  # noqa: F401
-        from bread.strategy.base import load_strategy_config
-        from bread.strategy.registry import get_strategy
-
-        strategy_cls = get_strategy(strategy)
-
-        # 7. Resolve universe provider references and instantiate strategy
-        from bread.data.universe import (
-            UNIVERSE_CACHE_DIR,
-            UniverseRegistry,
-            resolve_strategy_universe,
-        )
-
-        universe_registry = UniverseRegistry(
-            config.universe_providers, UNIVERSE_CACHE_DIR
-        )
-        strat_cfg = load_strategy_config(strategy_config_path)
-        resolved_universe = resolve_strategy_universe(
-            strat_cfg, universe_registry, strategy
-        )
-
-        strat_instance = strategy_cls(  # type: ignore[call-arg]
-            strategy_config_path, config.indicators, universe=resolved_universe,
-        )
-
-        # 8. Create data feed, load universe
-        from bread.backtest.data_feed import HistoricalDataFeed
-
-        provider = AlpacaDataProvider(config)
-        start_date = date.fromisoformat(start)
-        end_date = date.fromisoformat(end)
-        feed = HistoricalDataFeed(provider, config)
-        universe_data = feed.load_universe(strat_instance.universe, start_date, end_date)
-
-        # 9. Run backtest
-        from bread.backtest.engine import BacktestEngine
-
-        bt = BacktestEngine(strat_instance, config)
-        result = bt.run(universe_data, start_date, end_date)
-
-        # 10. Print metrics summary
-        m = result.metrics
-        typer.echo(f"Backtest: {strategy} | {start} to {end}")
-        typer.echo("---")
-        typer.echo(f"Total return:    {m['total_return_pct']:>8.2f}%")
-        typer.echo(f"CAGR:            {m['cagr_pct']:>8.2f}%")
-        typer.echo(f"Sharpe ratio:    {m['sharpe_ratio']:>8.2f}")
-        typer.echo(f"Sortino ratio:   {m['sortino_ratio']:>8.2f}")
-        typer.echo(f"Max drawdown:    {m['max_drawdown_pct']:>8.2f}%")
-        typer.echo(f"Win rate:        {m['win_rate_pct']:>8.2f}%")
-        typer.echo(f"Profit factor:   {m['profit_factor']:>8.2f}")
-        typer.echo(f"Total trades:    {m['total_trades']:>8d}")
-        typer.echo(f"Avg holding days:{m['avg_holding_days']:>8.2f}")
 
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)

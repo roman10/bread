@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import holidays
 import pandas as pd
+from sqlalchemy import func as sa_func
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -52,6 +54,77 @@ def last_completed_trading_day(as_of_utc: datetime) -> date:
         candidate -= timedelta(days=1)
 
     return candidate
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _upsert_bars(
+    session: Session, df: pd.DataFrame, symbol: str, timeframe: str,
+) -> None:
+    """Upsert OHLCV bars into market_data_cache using ON CONFLICT DO UPDATE."""
+    now_utc = datetime.now(UTC)
+    rows = []
+    for ts, row in df.iterrows():
+        rows.append(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "timestamp_utc": ts,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": int(row["volume"]),
+                "fetched_at_utc": now_utc,
+            }
+        )
+
+    if not rows:
+        return
+
+    stmt = sqlite_insert(MarketDataCache).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["symbol", "timeframe", "timestamp_utc"],
+        set_={
+            "open": stmt.excluded.open,
+            "high": stmt.excluded.high,
+            "low": stmt.excluded.low,
+            "close": stmt.excluded.close,
+            "volume": stmt.excluded.volume,
+            "fetched_at_utc": stmt.excluded.fetched_at_utc,
+        },
+    )
+    session.execute(stmt)
+    session.commit()
+    logger.info("Upserted %d bars for %s/%s", len(rows), symbol, timeframe)
+
+
+def _rows_to_dataframe(results: Sequence[MarketDataCache]) -> pd.DataFrame:
+    """Convert MarketDataCache rows to a provider-contract DataFrame."""
+    if not results:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    records = [
+        {
+            "timestamp": r.timestamp_utc,
+            "open": r.open,
+            "high": r.high,
+            "low": r.low,
+            "close": r.close,
+            "volume": r.volume,
+        }
+        for r in results
+    ]
+
+    df = pd.DataFrame.from_records(records)
+    ts = pd.to_datetime(df["timestamp"])
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize("UTC")
+    df["timestamp"] = ts
+    return df.set_index("timestamp").sort_index()
 
 
 # ---------------------------------------------------------------------------
@@ -194,45 +267,10 @@ class BarCache:
         return start, target_day
 
     def _upsert(self, df: pd.DataFrame, symbol: str, timeframe: str) -> None:
-        """Upsert bars into market_data_cache using ON CONFLICT DO UPDATE."""
-        now_utc = datetime.now(UTC)
-        rows = []
-        for ts, row in df.iterrows():
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "timestamp_utc": ts,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": int(row["volume"]),
-                    "fetched_at_utc": now_utc,
-                }
-            )
-
-        if not rows:
-            return
-
-        stmt = sqlite_insert(MarketDataCache).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "timeframe", "timestamp_utc"],
-            set_={
-                "open": stmt.excluded.open,
-                "high": stmt.excluded.high,
-                "low": stmt.excluded.low,
-                "close": stmt.excluded.close,
-                "volume": stmt.excluded.volume,
-                "fetched_at_utc": stmt.excluded.fetched_at_utc,
-            },
-        )
-        self._session.execute(stmt)
-        self._session.commit()
-        logger.info("Upserted %d bars for %s/%s", len(rows), symbol, timeframe)
+        _upsert_bars(self._session, df, symbol, timeframe)
 
     def _load_from_db(self, symbol: str, timeframe: str) -> pd.DataFrame:
-        """Load bars from SQLite and return as provider-contract DataFrame."""
+        """Load all bars from SQLite for a symbol/timeframe."""
         stmt = (
             select(MarketDataCache)
             .where(
@@ -242,28 +280,124 @@ class BarCache:
             .order_by(MarketDataCache.timestamp_utc.asc())
         )
         results = self._session.execute(stmt).scalars().all()
+        return _rows_to_dataframe(results)
 
-        if not results:
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-        records = []
-        for r in results:
-            records.append(
-                {
-                    "timestamp": r.timestamp_utc,
-                    "open": r.open,
-                    "high": r.high,
-                    "low": r.low,
-                    "close": r.close,
-                    "volume": r.volume,
-                }
-            )
+# ---------------------------------------------------------------------------
+# Caching DataProvider for backtests
+# ---------------------------------------------------------------------------
 
-        df = pd.DataFrame.from_records(records)
-        ts = pd.to_datetime(df["timestamp"])
-        if ts.dt.tz is None:
-            ts = ts.dt.tz_localize("UTC")
-        df["timestamp"] = ts
-        df = df.set_index("timestamp")
-        df = df.sort_index()
+
+class CachingDataProvider(DataProvider):
+    """DataProvider wrapper that caches fetched bars in SQLite.
+
+    Unlike BarCache (designed for live trading with "get latest" semantics),
+    this implements the DataProvider interface with explicit date ranges,
+    making repeated backtests hit the local DB instead of the Alpaca API.
+    """
+
+    def __init__(self, provider: DataProvider, session: Session) -> None:
+        self._provider = provider
+        self._session = session
+
+    def get_bars(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        timeframe: str,
+    ) -> pd.DataFrame:
+        symbol = symbol.upper()
+        if self._has_range(symbol, timeframe, start, end):
+            logger.debug("Cache hit for %s/%s [%s, %s]", symbol, timeframe, start, end)
+            return self._load_range(symbol, timeframe, start, end)
+
+        logger.info("Cache miss for %s/%s, fetching from API", symbol, timeframe)
+        df = self._provider.get_bars(symbol, start, end, timeframe)
+        self._upsert(df, symbol, timeframe)
         return df
+
+    def get_bars_batch(
+        self,
+        symbols: list[str],
+        start: date,
+        end: date,
+        timeframe: str,
+    ) -> dict[str, pd.DataFrame]:
+        symbols = [s.upper() for s in symbols]
+        result: dict[str, pd.DataFrame] = {}
+        to_fetch: list[str] = []
+
+        for s in symbols:
+            if self._has_range(s, timeframe, start, end):
+                df = self._load_range(s, timeframe, start, end)
+                if not df.empty:
+                    result[s] = df
+                    continue
+            to_fetch.append(s)
+
+        if to_fetch:
+            logger.info(
+                "Cache: %d hit, %d to fetch from API", len(result), len(to_fetch),
+            )
+            fetched = self._provider.get_bars_batch(to_fetch, start, end, timeframe)
+            for s, df in fetched.items():
+                self._upsert(df, s, timeframe)
+                result[s] = df
+
+        return result
+
+    def _has_range(self, symbol: str, timeframe: str, start: date, end: date) -> bool:
+        """Check if cached bars cover the requested [start, end] range."""
+        stmt = select(
+            sa_func.min(MarketDataCache.timestamp_utc),
+            sa_func.max(MarketDataCache.timestamp_utc),
+        ).where(
+            MarketDataCache.symbol == symbol,
+            MarketDataCache.timeframe == timeframe,
+        )
+        row = self._session.execute(stmt).one()
+        if row[0] is None:
+            return False
+
+        def _to_date(val: datetime | str) -> date:
+            if isinstance(val, datetime):
+                return val.date()
+            return datetime.fromisoformat(str(val)).date()
+
+        min_cached = _to_date(row[0])
+        max_cached = _to_date(row[1])
+
+        # Adjust for non-trading days (weekends/holidays) at range boundaries
+        first_needed = start
+        while not is_trading_day(first_needed) and first_needed <= end:
+            first_needed += timedelta(days=1)
+
+        last_needed = end
+        while not is_trading_day(last_needed) and last_needed >= start:
+            last_needed -= timedelta(days=1)
+
+        return min_cached <= first_needed and max_cached >= last_needed
+
+    def _load_range(
+        self, symbol: str, timeframe: str, start: date, end: date,
+    ) -> pd.DataFrame:
+        """Load cached bars filtered to [start, end]."""
+        start_dt = datetime(start.year, start.month, start.day, tzinfo=UTC)
+        end_dt = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC)
+
+        stmt = (
+            select(MarketDataCache)
+            .where(
+                MarketDataCache.symbol == symbol,
+                MarketDataCache.timeframe == timeframe,
+                MarketDataCache.timestamp_utc >= start_dt,
+                MarketDataCache.timestamp_utc <= end_dt,
+            )
+            .order_by(MarketDataCache.timestamp_utc.asc())
+        )
+        results = self._session.execute(stmt).scalars().all()
+        return _rows_to_dataframe(results)
+
+    def _upsert(self, df: pd.DataFrame, symbol: str, timeframe: str) -> None:
+        _upsert_bars(self._session, df, symbol, timeframe)

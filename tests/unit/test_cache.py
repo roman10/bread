@@ -12,7 +12,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from bread.core.config import AppConfig
-from bread.data.cache import BarCache, is_market_open, is_trading_day, last_completed_trading_day
+from bread.data.cache import (
+    BarCache,
+    CachingDataProvider,
+    is_market_open,
+    is_trading_day,
+    last_completed_trading_day,
+)
 from bread.db.database import init_db
 
 
@@ -281,3 +287,116 @@ class TestBarCacheBatch:
 
         assert "SPY" in result
         assert "MISSING" not in result
+
+
+class TestCachingDataProvider:
+    """Tests for CachingDataProvider (backtest caching)."""
+
+    def test_first_call_fetches_from_api(self, db_session: Session) -> None:
+        provider = MagicMock()
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 80)
+
+        cached = CachingDataProvider(provider, db_session)
+        result = cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+
+        assert not result.empty
+        provider.get_bars.assert_called_once()
+
+    def test_second_call_is_cache_hit(self, db_session: Session) -> None:
+        provider = MagicMock()
+        # 80 bdays from Jan 2 covers through ~Apr 22
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 80)
+
+        cached = CachingDataProvider(provider, db_session)
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+
+        # Provider called only once — second call was cached
+        assert provider.get_bars.call_count == 1
+
+    def test_narrower_range_hits_cache(self, db_session: Session) -> None:
+        """A request for a subset of cached data should not re-fetch."""
+        provider = MagicMock()
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 80)
+
+        cached = CachingDataProvider(provider, db_session)
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+
+        # Request a subset — should be a cache hit
+        result = cached.get_bars("SPY", date(2024, 2, 1), date(2024, 3, 29), "1Day")
+
+        assert not result.empty
+        assert provider.get_bars.call_count == 1
+
+    def test_wider_range_triggers_refetch(self, db_session: Session) -> None:
+        """A request extending beyond cached data should re-fetch."""
+        provider = MagicMock()
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 6, 3), 50)
+
+        cached = CachingDataProvider(provider, db_session)
+        cached.get_bars("SPY", date(2024, 6, 3), date(2024, 8, 9), "1Day")
+
+        # Request earlier start — cache miss
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 160)
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 8, 9), "1Day")
+
+        assert provider.get_bars.call_count == 2
+
+    def test_batch_caches_all_symbols(self, db_session: Session) -> None:
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2024, 1, 2), 80)
+        qqq_df = _make_ohlcv_df(date(2024, 1, 2), 80)
+        provider.get_bars_batch.return_value = {"SPY": spy_df, "QQQ": qqq_df}
+
+        cached = CachingDataProvider(provider, db_session)
+        cached.get_bars_batch(
+            ["SPY", "QQQ"], date(2024, 1, 2), date(2024, 4, 19), "1Day",
+        )
+        provider.get_bars_batch.reset_mock()
+
+        # Second call — all cached
+        result = cached.get_bars_batch(
+            ["SPY", "QQQ"], date(2024, 1, 2), date(2024, 4, 19), "1Day",
+        )
+
+        assert "SPY" in result
+        assert "QQQ" in result
+        provider.get_bars_batch.assert_not_called()
+
+    def test_batch_mixed_cached_and_missing(self, db_session: Session) -> None:
+        provider = MagicMock()
+        spy_df = _make_ohlcv_df(date(2024, 1, 2), 80)
+
+        # Pre-populate SPY only
+        cached = CachingDataProvider(provider, db_session)
+        provider.get_bars.return_value = spy_df
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+
+        # Batch fetch both — SPY cached, QQQ needs API
+        qqq_df = _make_ohlcv_df(date(2024, 1, 2), 80)
+        provider.get_bars_batch.return_value = {"QQQ": qqq_df}
+        result = cached.get_bars_batch(
+            ["SPY", "QQQ"], date(2024, 1, 2), date(2024, 4, 19), "1Day",
+        )
+
+        assert "SPY" in result
+        assert "QQQ" in result
+        # Only QQQ should be fetched
+        call_args = provider.get_bars_batch.call_args
+        assert call_args[0][0] == ["QQQ"]
+
+    def test_weekend_start_date_hits_cache(self, db_session: Session) -> None:
+        """Start date on weekend should still hit cache with Monday data."""
+        provider = MagicMock()
+        # Data starts Monday 2024-01-02, 80 bdays covers through ~Apr 22
+        provider.get_bars.return_value = _make_ohlcv_df(date(2024, 1, 2), 80)
+
+        cached = CachingDataProvider(provider, db_session)
+        cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
+
+        # Request with Sunday start (2023-12-31) — cache has Mon Jan 2 data
+        result = cached.get_bars("SPY", date(2023, 12, 31), date(2024, 4, 19), "1Day")
+
+        # Should still be a cache hit since Dec 31 2023 was a Sunday,
+        # and Jan 1 2024 was a holiday — first trading day is Jan 2
+        assert provider.get_bars.call_count == 1
