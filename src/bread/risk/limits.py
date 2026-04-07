@@ -125,6 +125,31 @@ def check_drawdown(
     return True, ""
 
 
+def check_bracket_prices(
+    price: float,
+    stop_loss_price: float,
+    take_profit_price: float,
+) -> tuple[bool, str]:
+    """Reject if bracket prices are invalid (SL must be below entry, TP above)."""
+    if price <= 0:
+        return False, f"entry price must be > 0, got {price}"
+    if stop_loss_price <= 0:
+        return False, f"stop_loss_price must be > 0, got {stop_loss_price}"
+    if take_profit_price <= 0:
+        return False, f"take_profit_price must be > 0, got {take_profit_price}"
+    if stop_loss_price >= price:
+        return False, (
+            f"stop_loss_price {stop_loss_price:.2f} must be below "
+            f"entry price {price:.2f}"
+        )
+    if take_profit_price <= price:
+        return False, (
+            f"take_profit_price {take_profit_price:.2f} must be above "
+            f"entry price {price:.2f}"
+        )
+    return True, ""
+
+
 def check_pdt(
     day_trade_count: int,
     equity: float,

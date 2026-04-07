@@ -89,6 +89,16 @@ class AlpacaBroker:
 
         Returns the Alpaca parent order ID.
         """
+        if qty <= 0:
+            raise OrderError(f"Invalid bracket order qty for {symbol}: {qty} (must be > 0)")
+        if stop_loss_price <= 0:
+            raise OrderError(
+                f"Invalid stop_loss_price for {symbol}: {stop_loss_price} (must be > 0)"
+            )
+        if take_profit_price <= 0:
+            raise OrderError(
+                f"Invalid take_profit_price for {symbol}: {take_profit_price} (must be > 0)"
+            )
         logger.info(
             "Submitting bracket order: %s qty=%d stop=%.2f tp=%.2f",
             symbol, qty, stop_loss_price, take_profit_price,

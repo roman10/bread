@@ -2,6 +2,7 @@
 
 from bread.risk.limits import (
     check_asset_class_exposure,
+    check_bracket_prices,
     check_daily_loss,
     check_drawdown,
     check_max_positions,
@@ -146,6 +147,41 @@ class TestCheckDrawdown:
     def test_zero_peak(self) -> None:
         passed, _ = check_drawdown(9_000, 0, 0.07)
         assert passed is False
+
+
+class TestCheckBracketPrices:
+    def test_valid_bracket(self) -> None:
+        passed, _ = check_bracket_prices(100.0, 95.0, 110.0)
+        assert passed is True
+
+    def test_stop_loss_above_price(self) -> None:
+        passed, reason = check_bracket_prices(100.0, 105.0, 110.0)
+        assert passed is False
+        assert "stop_loss_price" in reason
+
+    def test_take_profit_below_price(self) -> None:
+        passed, reason = check_bracket_prices(100.0, 95.0, 90.0)
+        assert passed is False
+        assert "take_profit_price" in reason
+
+    def test_stop_loss_zero(self) -> None:
+        passed, reason = check_bracket_prices(100.0, 0.0, 110.0)
+        assert passed is False
+        assert "stop_loss_price" in reason
+
+    def test_stop_loss_negative(self) -> None:
+        passed, reason = check_bracket_prices(100.0, -5.0, 110.0)
+        assert passed is False
+
+    def test_take_profit_equal_price(self) -> None:
+        passed, reason = check_bracket_prices(100.0, 95.0, 100.0)
+        assert passed is False
+        assert "take_profit_price" in reason
+
+    def test_stop_loss_equal_price(self) -> None:
+        passed, reason = check_bracket_prices(100.0, 100.0, 110.0)
+        assert passed is False
+        assert "stop_loss_price" in reason
 
 
 class TestCheckPdt:

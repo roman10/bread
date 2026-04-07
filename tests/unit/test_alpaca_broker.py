@@ -181,6 +181,43 @@ class TestAlpacaBroker:
         mock_client.close_position.assert_called_once()
 
     @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_submit_bracket_order_zero_qty(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="must be > 0"):
+            broker.submit_bracket_order("SPY", 0, 475.0, 525.0)
+        mock_client_cls.return_value.submit_order.assert_not_called()
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_submit_bracket_order_negative_qty(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="must be > 0"):
+            broker.submit_bracket_order("SPY", -5, 475.0, 525.0)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_submit_bracket_order_zero_stop_loss(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="stop_loss_price"):
+            broker.submit_bracket_order("SPY", 10, 0.0, 525.0)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_submit_bracket_order_negative_take_profit(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        broker = AlpacaBroker(config)
+        with pytest.raises(OrderError, match="take_profit_price"):
+            broker.submit_bracket_order("SPY", 10, 475.0, -1.0)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
     def test_get_positions(
         self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:

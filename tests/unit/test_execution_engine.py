@@ -249,6 +249,23 @@ class TestProcessSignals:
             assert len(orders) == 1
             assert orders[0].status == "REJECTED"
 
+    def test_buy_with_invalid_bracket_prices_rejected(self, monkeypatch) -> None:
+        """A signal with stop_loss_pct >= 1.0 produces invalid bracket prices."""
+        engine, mock_broker, mock_risk, sf = _make_engine(monkeypatch)
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+
+        # stop_loss_pct=1.5 -> stop_loss_price = 500 * (1 - 1.5) = -250
+        signals = [_make_signal("SPY", SignalDirection.BUY, stop_loss_pct=1.5)]
+        engine.process_signals(signals, {"SPY": 500.0})
+
+        mock_broker.submit_bracket_order.assert_not_called()
+        assert "SPY" not in engine._positions
+        with sf() as session:
+            orders = session.execute(select(OrderLog)).scalars().all()
+            assert len(orders) == 1
+            assert orders[0].status == "REJECTED"
+            assert "invalid bracket" in orders[0].reason
+
 
 class TestSaveSnapshot:
     def test_saves_snapshot(self, monkeypatch) -> None:
@@ -1290,3 +1307,114 @@ class TestClaudeReview:
         assert mock_broker.submit_bracket_order.call_count == 1
         call_args = mock_broker.submit_bracket_order.call_args[0]
         assert call_args[0] == "SPY"
+
+
+class TestStaleOrderTimeout:
+    def test_stale_pending_order_cancelled(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        stale_time = datetime.now(UTC) - timedelta(minutes=60)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="stale-1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=stale_time,
+                )
+            )
+            session.commit()
+
+        # Broker returns no orders (so reconcile_orders status update is a no-op)
+        mock_broker.get_orders.return_value = []
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "CANCELLED"
+        mock_broker.cancel_orders_for_symbol.assert_called_once_with("SPY")
+
+    def test_fresh_order_not_cancelled(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        fresh_time = datetime.now(UTC) - timedelta(minutes=5)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="fresh-1",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=fresh_time,
+                )
+            )
+            session.commit()
+
+        mock_broker.get_orders.return_value = []
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "PENDING"
+        mock_broker.cancel_orders_for_symbol.assert_not_called()
+
+    def test_stale_accepted_also_cancelled(self, monkeypatch) -> None:
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        stale_time = datetime.now(UTC) - timedelta(minutes=60)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="stale-2",
+                    symbol="QQQ",
+                    side="BUY",
+                    qty=5,
+                    status="ACCEPTED",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=stale_time,
+                )
+            )
+            session.commit()
+
+        mock_broker.get_orders.return_value = []
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "CANCELLED"
+
+    def test_stale_order_without_broker_id(self, monkeypatch) -> None:
+        """Order without broker_order_id still marked CANCELLED but no broker cancel."""
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        stale_time = datetime.now(UTC) - timedelta(minutes=60)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id=None,
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=stale_time,
+                )
+            )
+            session.commit()
+
+        mock_broker.get_orders.return_value = []
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "CANCELLED"
+        mock_broker.cancel_orders_for_symbol.assert_not_called()

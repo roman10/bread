@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from bread.core.exceptions import OrderError
 from bread.core.models import OrderSide, OrderStatus, Position, SignalDirection
 from bread.db.models import OrderLog, PortfolioSnapshot
+from bread.risk.limits import check_bracket_prices
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session, sessionmaker
@@ -186,8 +187,38 @@ class ExecutionEngine:
                         )
 
                 session.commit()
+
+                # Cancel stale orders stuck in PENDING/ACCEPTED too long
+                self._cancel_stale_orders(session)
         except Exception:
             logger.exception("Failed to reconcile orders")
+
+    def _cancel_stale_orders(self, session: Session) -> None:
+        """Cancel orders stuck in PENDING/ACCEPTED beyond the timeout."""
+        timeout = self._config.execution.stale_order_timeout_minutes
+        cutoff = datetime.now(UTC) - timedelta(minutes=timeout)
+        stale = (
+            session.execute(
+                select(OrderLog).where(
+                    OrderLog.status.in_(["PENDING", "ACCEPTED"]),
+                    OrderLog.created_at_utc < cutoff,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for order in stale:
+            logger.warning(
+                "Stale order %s for %s (age > %d min) — cancelling",
+                order.broker_order_id,
+                order.symbol,
+                timeout,
+            )
+            if order.broker_order_id:
+                self._broker.cancel_orders_for_symbol(order.symbol)
+            order.status = "CANCELLED"
+        if stale:
+            session.commit()
 
     def process_signals(
         self,
@@ -306,6 +337,24 @@ class ExecutionEngine:
             stop_loss_price = price * (1 - sig.stop_loss_pct)
             take_profit_pct = sig.stop_loss_pct * self._config.execution.take_profit_ratio
             take_profit_price = price * (1 + take_profit_pct)
+
+            bracket_ok, bracket_reason = check_bracket_prices(
+                price, stop_loss_price, take_profit_price
+            )
+            if not bracket_ok:
+                logger.error(
+                    "BUY %s rejected: invalid bracket — %s", sig.symbol, bracket_reason
+                )
+                self._log_order(
+                    sig.symbol,
+                    OrderSide.BUY,
+                    shares,
+                    OrderStatus.REJECTED,
+                    None,
+                    sig.strategy_name,
+                    f"invalid bracket: {bracket_reason}",
+                )
+                continue
 
             try:
                 order_id = self._broker.submit_bracket_order(

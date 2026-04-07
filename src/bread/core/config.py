@@ -143,6 +143,7 @@ class PaperCostSettings(BaseModel):
 class ExecutionSettings(BaseModel):
     tick_interval_minutes: int = Field(default=15, ge=1)
     take_profit_ratio: float = Field(default=2.0, gt=0)
+    stale_order_timeout_minutes: int = Field(default=30, ge=5)
     paper_cost: PaperCostSettings = Field(default_factory=PaperCostSettings)
 
 
