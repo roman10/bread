@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from alpaca.trading.client import TradingClient
@@ -47,8 +48,8 @@ def _is_held_for_orders_error(exc: BaseException) -> bool:
 
 _close_retrier = Retrying(
     retry=retry_if_exception(_is_held_for_orders_error),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=0.5, min=0.5, max=1),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
     reraise=True,
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
@@ -161,6 +162,22 @@ class AlpacaBroker:
                     cancelled += 1
                 except Exception:
                     logger.warning("Failed to cancel order %s for %s", order.id, symbol)
+        if cancelled > 0:
+            # Poll until Alpaca confirms cancellations (shares released)
+            for _ in range(10):  # up to ~5s
+                time.sleep(0.5)
+                try:
+                    remaining = [
+                        o for o in self.get_orders(status="open") if o.symbol == symbol
+                    ]
+                except Exception:
+                    break  # can't check — proceed anyway
+                if not remaining:
+                    break
+            else:
+                logger.warning(
+                    "Orders for %s still open after cancellation timeout", symbol
+                )
         return cancelled
 
     def close_position(self, symbol: str) -> str | None:

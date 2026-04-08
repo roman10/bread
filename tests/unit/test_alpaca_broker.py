@@ -266,7 +266,7 @@ class TestAlpacaBroker:
         with pytest.raises(OrderError, match="Failed to close position"):
             broker.close_position("XLE")
 
-        assert mock_client.close_position.call_count == 3
+        assert mock_client.close_position.call_count == 5
 
     @patch("bread.execution.alpaca_broker.TradingClient")
     def test_close_position_does_not_retry_unrelated_errors(
