@@ -6,7 +6,7 @@ set -euo pipefail
 BREAD_USER="bread"
 BREAD_HOME="/home/$BREAD_USER"
 BREAD_DIR="$BREAD_HOME/bread"
-REPO_URL="${BREAD_REPO_URL:-https://github.com/waterdrop86/bread.git}"
+REPO_URL="${BREAD_REPO_URL:-https://github.com/roman10/bread.git}"
 SWAP_SIZE="1G"
 
 echo "=== Bread Trading Bot — GCP Setup ==="
