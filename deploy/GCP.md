@@ -13,8 +13,8 @@ In GCP Console → Compute Engine → VM Instances → Create Instance:
 | Setting | Value |
 |---------|-------|
 | Name | `bread-trading` |
-| Region | `us-east1` (closest to NYSE/Alpaca) |
-| Zone | `us-east1-b` |
+| Region | `us-central1` (free tier eligible, good availability) |
+| Zone | `us-central1-a` (or Any — let GCP pick) |
 | Machine type | `e2-micro` (free tier eligible) |
 | Boot disk | Debian 12, 30 GB standard persistent disk |
 | Firewall | No HTTP/HTTPS needed (Tailscale handles access) |
@@ -24,7 +24,7 @@ In GCP Console → Compute Engine → VM Instances → Create Instance:
 ## 2. SSH into the VM
 
 ```bash
-gcloud compute ssh bread-trading --zone us-east1-b
+gcloud compute ssh bread-trading --zone us-central1-a
 ```
 
 ## 3. Run Setup
