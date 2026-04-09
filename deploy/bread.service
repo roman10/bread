@@ -1,0 +1,31 @@
+[Unit]
+Description=Bread Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bread
+Group=bread
+WorkingDirectory=/home/bread/bread
+ExecStart=/home/bread/bread/.venv/bin/python -m bread run --mode paper
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+
+# Secrets
+EnvironmentFile=/home/bread/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bread
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/bread
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
