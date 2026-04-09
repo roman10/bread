@@ -1,1 +1,1 @@
-- [ ] run bread on gcp free account #medium 2026-04-09
+- [x] run bread on gcp free account #medium 2026-04-09
