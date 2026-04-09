@@ -1,5 +1,7 @@
 # Bread
 
+Open http://100.118.138.14:8050/ to see the dashboard.
+
 Algorithmic swing trading system for US-listed ETFs, built on the Alpaca Markets API.
 
 Targets ~20% annual returns on $5K-$20K capital with 4-8 trades per month and 3-15 day holding periods.
