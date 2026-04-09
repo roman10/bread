@@ -1,4 +1,4 @@
-"""Technical indicator computation using pandas-ta."""
+"""Technical indicator computation using pure pandas (no external TA library)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import logging
 
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import InsufficientHistoryError
@@ -16,6 +15,53 @@ logger = logging.getLogger(__name__)
 
 def _fmt_stddev(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
+
+
+def _sma(series: pd.Series, length: int) -> pd.Series:
+    return series.rolling(length).mean()
+
+
+def _ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False).mean()
+
+
+def _rsi(close: pd.Series, length: int) -> pd.Series:
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _macd(
+    close: pd.Series, fast: int, slow: int, signal: int
+) -> pd.DataFrame:
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return pd.DataFrame({0: macd_line, 1: signal_line, 2: histogram})
+
+
+def _atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, length: int
+) -> pd.Series:
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    return tr.ewm(alpha=1.0 / length, min_periods=length, adjust=False).mean()
+
+
+def _bbands(close: pd.Series, length: int, std: float) -> pd.DataFrame:
+    mid = close.rolling(length).mean()
+    stddev = close.rolling(length).std(ddof=1)
+    upper = mid + std * stddev
+    lower = mid - std * stddev
+    return pd.DataFrame({0: lower, 1: mid, 2: upper})
 
 
 def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.DataFrame:
@@ -34,50 +80,48 @@ def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.Data
 
     # SMA
     for period in settings.sma_periods:
-        result[f"sma_{period}"] = ta.sma(result["close"], length=period)
+        result[f"sma_{period}"] = _sma(result["close"], length=period)
 
     # EMA
     for period in settings.ema_periods:
-        result[f"ema_{period}"] = ta.ema(result["close"], length=period)
+        result[f"ema_{period}"] = _ema(result["close"], length=period)
 
     # RSI
-    result[f"rsi_{settings.rsi_period}"] = ta.rsi(
+    result[f"rsi_{settings.rsi_period}"] = _rsi(
         result["close"], length=settings.rsi_period
     )
 
     # MACD
-    macd_df = ta.macd(
+    macd_df = _macd(
         result["close"],
         fast=settings.macd_fast,
         slow=settings.macd_slow,
         signal=settings.macd_signal,
     )
-    if macd_df is not None:
-        result["macd"] = macd_df.iloc[:, 0]
-        result["macd_signal"] = macd_df.iloc[:, 1]
-        result["macd_hist"] = macd_df.iloc[:, 2]
+    result["macd"] = macd_df.iloc[:, 0]
+    result["macd_signal"] = macd_df.iloc[:, 1]
+    result["macd_hist"] = macd_df.iloc[:, 2]
 
     # ATR
-    result[f"atr_{settings.atr_period}"] = ta.atr(
+    result[f"atr_{settings.atr_period}"] = _atr(
         result["high"], result["low"], result["close"],
         length=settings.atr_period,
     )
 
     # Bollinger Bands
     sdv = _fmt_stddev(settings.bollinger_stddev)
-    bb_df = ta.bbands(
+    bb_df = _bbands(
         result["close"],
         length=settings.bollinger_period,
-        std=settings.bollinger_stddev,  # type: ignore[arg-type]
+        std=settings.bollinger_stddev,
     )
-    if bb_df is not None:
-        bp = settings.bollinger_period
-        result[f"bb_lower_{bp}_{sdv}"] = bb_df.iloc[:, 0]
-        result[f"bb_mid_{bp}_{sdv}"] = bb_df.iloc[:, 1]
-        result[f"bb_upper_{bp}_{sdv}"] = bb_df.iloc[:, 2]
+    bp = settings.bollinger_period
+    result[f"bb_lower_{bp}_{sdv}"] = bb_df.iloc[:, 0]
+    result[f"bb_mid_{bp}_{sdv}"] = bb_df.iloc[:, 1]
+    result[f"bb_upper_{bp}_{sdv}"] = bb_df.iloc[:, 2]
 
     # Volume SMA
-    result[f"volume_sma_{settings.volume_sma_period}"] = ta.sma(
+    result[f"volume_sma_{settings.volume_sma_period}"] = _sma(
         result["volume"].astype(float), length=settings.volume_sma_period
     )
 

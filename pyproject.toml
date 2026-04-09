@@ -11,7 +11,7 @@ dependencies = [
     "sqlalchemy>=2.0",
     "pydantic>=2.0",
     "pandas>=2.0",
-    "pandas-ta>=0.3.14b0",
+    "pytz>=2024.1",
     "alpaca-py>=0.21",
     "holidays>=0.40",
     "tenacity>=8.0",
@@ -58,7 +58,7 @@ warn_unused_configs = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["pandas_ta", "alpaca.*", "pandas_ta.*", "apscheduler.*"]
+module = ["alpaca.*", "apscheduler.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
