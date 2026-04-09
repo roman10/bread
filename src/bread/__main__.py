@@ -204,13 +204,13 @@ def _start_dashboard_thread(port: int) -> None:
     def _serve() -> None:
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
         try:
-            dash_app.run(host="127.0.0.1", port=port, debug=False)
+            dash_app.run(host="0.0.0.0", port=port, debug=False)
         except OSError:
             logger.warning("Dashboard port %d in use — skipping auto-start", port)
 
     thread = threading.Thread(target=_serve, daemon=True, name="dashboard")
     thread.start()
-    typer.echo(f"Dashboard: http://localhost:{port}")
+    typer.echo(f"Dashboard: http://0.0.0.0:{port}")
 
 
 @app.command("run")
