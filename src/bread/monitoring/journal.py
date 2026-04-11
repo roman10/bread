@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -181,3 +181,73 @@ def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
         "best_trade": max(e.pnl for e in entries),
         "worst_trade": min(e.pnl for e in entries),
     }
+
+
+@dataclass(frozen=True)
+class StrategyPnLSummary:
+    """Per-strategy realized P&L breakdown — surfaced on the dashboard."""
+
+    strategy_name: str
+    total_trades: int
+    win_rate_pct: float
+    total_pnl: float
+    expectancy: float
+    profit_factor: float  # sum(wins) / |sum(losses)|; inf if zero losses
+    best_trade: float
+    worst_trade: float
+    avg_hold_days: float
+
+
+def get_all_strategies_summary(
+    session: Session,
+    *,
+    days: int = 365,
+) -> list[StrategyPnLSummary]:
+    """Group completed trades by strategy and compute per-strategy summary stats.
+
+    Reuses get_journal() and get_journal_summary() so the FIFO pair-matching
+    logic stays single-source-of-truth. Returns an entry only for strategies
+    that have at least one completed round-trip in the window. Sorted by
+    total_pnl descending so the best earner appears first.
+    """
+    start = date.today() - timedelta(days=days)
+    # Pull a generous limit so the leaderboard isn't silently truncated.
+    entries = get_journal(session, start=start, limit=10_000)
+
+    by_strategy: dict[str, list[JournalEntry]] = {}
+    for e in entries:
+        by_strategy.setdefault(e.strategy_name, []).append(e)
+
+    summaries: list[StrategyPnLSummary] = []
+    for strategy_name, group in by_strategy.items():
+        base = get_journal_summary(group)
+
+        winning_pnl = sum(e.pnl for e in group if e.pnl > 0)
+        losing_pnl = sum(e.pnl for e in group if e.pnl <= 0)
+        if losing_pnl < 0:
+            profit_factor = (
+                winning_pnl / abs(losing_pnl) if winning_pnl > 0 else 0.0
+            )
+        elif winning_pnl > 0:
+            profit_factor = float("inf")
+        else:
+            profit_factor = 0.0
+
+        avg_hold = sum(e.hold_days for e in group) / len(group)
+
+        summaries.append(
+            StrategyPnLSummary(
+                strategy_name=strategy_name,
+                total_trades=int(base["total_trades"]),
+                win_rate_pct=float(base["win_rate_pct"]),
+                total_pnl=float(base["total_pnl"]),
+                expectancy=float(base["expectancy"]),
+                profit_factor=profit_factor,
+                best_trade=float(base["best_trade"]),
+                worst_trade=float(base["worst_trade"]),
+                avg_hold_days=avg_hold,
+            )
+        )
+
+    summaries.sort(key=lambda s: s.total_pnl, reverse=True)
+    return summaries

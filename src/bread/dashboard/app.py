@@ -26,6 +26,7 @@ def _make_navbar(mode: str) -> dbc.Navbar:
             dbc.NavbarBrand("bread", className="fw-bold"),
             dbc.Nav([
                 dbc.NavItem(dbc.NavLink("Portfolio", href="/", active="exact")),
+                dbc.NavItem(dbc.NavLink("Strategies", href="/strategies", active="exact")),
                 dbc.NavItem(dbc.NavLink("Trades", href="/trades", active="exact")),
             ], navbar=True, className="me-auto"),
             dbc.Badge(mode.upper(), color=badge_color, className="me-2 fs-6"),

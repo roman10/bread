@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -16,7 +17,11 @@ from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
 from bread.db.models import EventAlertLog, OrderLog, PortfolioSnapshot, SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
-from bread.monitoring.journal import get_journal, get_journal_summary
+from bread.monitoring.journal import (
+    get_all_strategies_summary,
+    get_journal,
+    get_journal_summary,
+)
 from bread.monitoring.tracker import get_daily_summaries, get_drawdown_series, get_period_pnl
 
 if TYPE_CHECKING:
@@ -198,6 +203,33 @@ class DashboardData:
     def get_journal_summary(self, entries: list[JournalEntry]) -> dict:
         """Compute summary stats from journal entries."""
         return get_journal_summary(entries)
+
+    def get_strategy_leaderboard(self, days: int = 365) -> list[dict]:
+        """Return per-strategy realized P&L rows for the AG Grid leaderboard.
+
+        Profit factor of `inf` (a strategy with zero losses) is sent as `None`
+        because JSON cannot represent infinity; the column formatter renders
+        it as the unicode infinity glyph.
+        """
+        with self._sf() as session:
+            summaries = get_all_strategies_summary(session, days=days)
+
+        return [
+            {
+                "strategy_name": s.strategy_name,
+                "total_trades": s.total_trades,
+                "win_rate_pct": s.win_rate_pct,
+                "total_pnl": s.total_pnl,
+                "expectancy": s.expectancy,
+                "profit_factor": (
+                    None if math.isinf(s.profit_factor) else s.profit_factor
+                ),
+                "best_trade": s.best_trade,
+                "worst_trade": s.worst_trade,
+                "avg_hold_days": s.avg_hold_days,
+            }
+            for s in summaries
+        ]
 
     # ------------------------------------------------------------------
     # Bot activity & strategy status

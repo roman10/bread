@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from bread.db.database import init_db
 from bread.db.models import OrderLog
-from bread.monitoring.journal import get_journal, get_journal_summary
+from bread.monitoring.journal import (
+    get_all_strategies_summary,
+    get_journal,
+    get_journal_summary,
+)
 
 
 def _make_sf():
@@ -281,3 +285,105 @@ class TestJournalWithCostAdjustedPrices:
         assert e.exit_price == adj_sell
         expected_pnl = round((adj_sell - adj_buy) * 10, 2)
         assert e.pnl == expected_pnl
+
+
+class TestGetAllStrategiesSummary:
+    """Per-strategy aggregation used by the dashboard leaderboard."""
+
+    def _seed_two_strategies(self):
+        sf = _make_sf()
+        # strat_a: 1 win (+200), 1 loss (-50) -> total +150, win_rate 50%
+        # strat_b: 2 wins (+100, +30) -> total +130, win_rate 100%, no losses
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        t3 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
+        t4 = datetime(2026, 3, 15, 14, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="strat_a")
+        _fill(sf, "SPY", "SELL", 10, 520.0, t2, strategy="strat_a")  # +200
+        _fill(sf, "SPY", "BUY", 5, 510.0, t3, strategy="strat_a")
+        _fill(sf, "SPY", "SELL", 5, 500.0, t4, strategy="strat_a")  # -50
+        _fill(sf, "QQQ", "BUY", 10, 400.0, t1, strategy="strat_b")
+        _fill(sf, "QQQ", "SELL", 10, 410.0, t2, strategy="strat_b")  # +100
+        _fill(sf, "QQQ", "BUY", 3, 405.0, t3, strategy="strat_b")
+        _fill(sf, "QQQ", "SELL", 3, 415.0, t4, strategy="strat_b")  # +30
+        return sf
+
+    def test_empty_db_returns_empty(self) -> None:
+        sf = _make_sf()
+        with sf() as session:
+            assert get_all_strategies_summary(session) == []
+
+    def test_groups_by_strategy(self) -> None:
+        sf = self._seed_two_strategies()
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=365)
+
+        assert len(summaries) == 2
+        names = {s.strategy_name for s in summaries}
+        assert names == {"strat_a", "strat_b"}
+
+    def test_per_strategy_pnl_and_win_rate(self) -> None:
+        sf = self._seed_two_strategies()
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=365)
+
+        by_name = {s.strategy_name: s for s in summaries}
+
+        assert by_name["strat_a"].total_trades == 2
+        assert by_name["strat_a"].total_pnl == 150.0
+        assert by_name["strat_a"].win_rate_pct == 50.0
+        assert by_name["strat_a"].best_trade == 200.0
+        assert by_name["strat_a"].worst_trade == -50.0
+        # PF: wins=200, losses=50 -> 200/50 = 4.0
+        assert by_name["strat_a"].profit_factor == 4.0
+
+        assert by_name["strat_b"].total_trades == 2
+        assert by_name["strat_b"].total_pnl == 130.0
+        assert by_name["strat_b"].win_rate_pct == 100.0
+        # PF: zero losses, positive wins -> inf
+        assert by_name["strat_b"].profit_factor == float("inf")
+
+    def test_sorted_by_total_pnl_descending(self) -> None:
+        sf = self._seed_two_strategies()
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=365)
+
+        # strat_a (150) > strat_b (130)
+        assert [s.strategy_name for s in summaries] == ["strat_a", "strat_b"]
+
+    def test_strategy_with_only_losses_has_zero_pf(self) -> None:
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="loser")
+        _fill(sf, "SPY", "SELL", 10, 490.0, t2, strategy="loser")  # -100
+
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=365)
+
+        assert len(summaries) == 1
+        assert summaries[0].strategy_name == "loser"
+        assert summaries[0].total_pnl == -100.0
+        assert summaries[0].win_rate_pct == 0.0
+        assert summaries[0].profit_factor == 0.0  # no wins, only losses
+
+    def test_days_filter_excludes_old_trades(self) -> None:
+        sf = _make_sf()
+        # Old trade — 400 days ago
+        t_old_buy = datetime.now(UTC) - timedelta(days=400)
+        t_old_sell = datetime.now(UTC) - timedelta(days=395)
+        # Recent trade — 10 days ago
+        t_new_buy = datetime.now(UTC) - timedelta(days=10)
+        t_new_sell = datetime.now(UTC) - timedelta(days=5)
+
+        _fill(sf, "SPY", "BUY", 10, 500.0, t_old_buy, strategy="strat_a")
+        _fill(sf, "SPY", "SELL", 10, 600.0, t_old_sell, strategy="strat_a")
+        _fill(sf, "QQQ", "BUY", 10, 400.0, t_new_buy, strategy="strat_b")
+        _fill(sf, "QQQ", "SELL", 10, 410.0, t_new_sell, strategy="strat_b")
+
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=30)
+
+        # Only the recent strat_b trade should be included
+        assert len(summaries) == 1
+        assert summaries[0].strategy_name == "strat_b"
