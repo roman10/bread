@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pandas as pd
 import yaml
@@ -33,6 +33,7 @@ def load_strategy_config(config_path: Path) -> dict[str, Any]:
 class Strategy(ABC):
     _universe: list[str]
     _required_cols: set[str]
+    accepts_claude_client: ClassVar[bool] = False  # set True in strategies that accept ClaudeClient
 
     @abstractmethod
     def evaluate(self, universe: dict[str, pd.DataFrame]) -> list[Signal]:

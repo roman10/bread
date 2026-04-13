@@ -6,11 +6,12 @@ import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from bread.core.exceptions import OrderError
 from bread.core.models import OrderSide, OrderStatus, Position, SignalDirection
 from bread.db.models import OrderLog, PortfolioSnapshot
+from bread.risk.context import RiskContext, RiskContextRepo
 from bread.risk.limits import check_bracket_prices
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class ExecutionEngine:
         self._claude = claude_client
         self._positions: dict[str, Position] = {}
         self._last_reviews: dict[str, SignalReview] = {}
+        self._risk_context = RiskContextRepo(session_factory)
 
     def _adjust_fill_price(self, raw_price: float, side: str) -> float:
         """Apply paper trading cost model to a fill price.
@@ -273,9 +275,7 @@ class ExecutionEngine:
                 logger.exception("Failed to close position %s", sig.symbol)
 
         # Process BUYs — three phases: risk approval, Claude review, order submission
-        peak_equity = self._get_peak_equity(equity)
-        weekly_pnl = self._get_weekly_pnl(equity)
-        day_trade_count = self._get_day_trade_count()
+        risk_ctx = self._risk_context.fetch(equity, buying_power, daily_pnl)
 
         # Phase A: Collect risk-approved signals
         approved_buys: list[tuple[Signal, int, float]] = []
@@ -298,10 +298,10 @@ class ExecutionEngine:
                 buying_power=buying_power,
                 equity=equity,
                 positions=list(self._positions.values()),
-                peak_equity=peak_equity,
+                peak_equity=risk_ctx.peak_equity,
                 daily_pnl=daily_pnl,
-                weekly_pnl=weekly_pnl,
-                day_trade_count=day_trade_count,
+                weekly_pnl=risk_ctx.weekly_pnl,
+                day_trade_count=risk_ctx.day_trade_count,
             )
 
             if not validation.approved:
@@ -323,14 +323,7 @@ class ExecutionEngine:
         # Phase B: Claude AI review (if enabled)
         self._last_reviews.clear()
         if self._claude and self._config.claude.enabled and approved_buys:
-            approved_buys = self._claude_review_batch(
-                approved_buys,
-                equity,
-                buying_power,
-                daily_pnl,
-                weekly_pnl,
-                peak_equity,
-            )
+            approved_buys = self._claude_review_batch(approved_buys, risk_ctx)
 
         # Phase C: Submit orders
         for sig, shares, price in approved_buys:
@@ -401,11 +394,7 @@ class ExecutionEngine:
     def _claude_review_batch(
         self,
         approved_buys: list[tuple[Signal, int, float]],
-        equity: float,
-        buying_power: float,
-        daily_pnl: float,
-        weekly_pnl: float,
-        peak_equity: float,
+        risk_ctx: RiskContext,
     ) -> list[tuple[Signal, int, float]]:
         """Filter approved buys through Claude AI review.
 
@@ -416,12 +405,12 @@ class ExecutionEngine:
         from bread.ai.models import TradeContext
 
         context = TradeContext(
-            equity=equity,
-            buying_power=buying_power,
+            equity=risk_ctx.equity,
+            buying_power=risk_ctx.buying_power,
             open_positions=list(self._positions.keys()),
-            daily_pnl=daily_pnl,
-            weekly_pnl=weekly_pnl,
-            peak_equity=peak_equity,
+            daily_pnl=risk_ctx.daily_pnl,
+            weekly_pnl=risk_ctx.weekly_pnl,
+            peak_equity=risk_ctx.peak_equity,
         )
         signals = [sig for sig, _, _ in approved_buys]
 
@@ -571,70 +560,6 @@ class ExecutionEngine:
                 session.commit()
         except Exception:
             logger.exception("Failed to save portfolio snapshot")
-
-    def _get_peak_equity(self, current_equity: float) -> float:
-        """Get peak equity from portfolio_snapshots, defaulting to current."""
-        try:
-            with self._session_factory() as session:
-                result = session.execute(
-                    select(func.max(PortfolioSnapshot.equity))
-                ).scalar_one_or_none()
-                return max(result or current_equity, current_equity)
-        except Exception:
-            logger.exception("Failed to query peak equity")
-            return current_equity
-
-    def _get_weekly_pnl(self, current_equity: float) -> float:
-        """Compute weekly P&L as change in equity since start of week."""
-        try:
-            today = date.today()
-            monday = today - timedelta(days=today.weekday())
-            week_start = datetime(monday.year, monday.month, monday.day, tzinfo=UTC)
-
-            with self._session_factory() as session:
-                # Get the earliest snapshot from this week as the baseline
-                start_equity = session.execute(
-                    select(PortfolioSnapshot.equity)
-                    .where(PortfolioSnapshot.timestamp_utc >= week_start)
-                    .order_by(PortfolioSnapshot.timestamp_utc)
-                    .limit(1)
-                ).scalar_one_or_none()
-
-            if start_equity is None:
-                return 0.0
-            return current_equity - start_equity
-        except Exception:
-            logger.exception("Failed to compute weekly P&L")
-            return 0.0
-
-    def _get_day_trade_count(self) -> int:
-        """Count day trades (same-day buy+sell) in last 5 trading days."""
-        try:
-            cutoff = datetime.now(UTC) - timedelta(days=7)  # 7 calendar days >= 5 trading days
-            with self._session_factory() as session:
-                rows = session.execute(
-                    select(OrderLog.symbol, OrderLog.side, OrderLog.filled_at_utc).where(
-                        OrderLog.status == OrderStatus.FILLED,
-                        OrderLog.filled_at_utc >= cutoff,
-                    )
-                ).all()
-
-            # Group by symbol+date, check for both BUY and SELL
-            by_symbol_date: dict[tuple[str, date], set[str]] = {}
-            for symbol, side, filled_at in rows:
-                if filled_at is None:
-                    continue
-                key = (symbol, filled_at.date())
-                by_symbol_date.setdefault(key, set()).add(side)
-
-            return sum(
-                1
-                for sides in by_symbol_date.values()
-                if OrderSide.BUY in sides and OrderSide.SELL in sides
-            )
-        except Exception:
-            logger.exception("Failed to count day trades")
-            return 0
 
     def _log_order(
         self,

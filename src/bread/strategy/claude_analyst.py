@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import ClaudeError
@@ -34,6 +34,8 @@ class ClaudeAnalyst(Strategy):
     single batched CLI call, and converts structured recommendations into
     Signal objects.  On any Claude failure, returns no signals (fail-safe).
     """
+
+    accepts_claude_client: ClassVar[bool] = True
 
     def __init__(
         self,
