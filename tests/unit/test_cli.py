@@ -279,3 +279,126 @@ class TestStartDashboardThread:
         with patch.dict("sys.modules", {"bread.dashboard.app": None}):
             # Should not raise
             _start_dashboard_thread(8050)
+
+
+class TestRepairOrders:
+    """Covers `bread repair-orders` backfill behavior and safety.
+
+    The command queries rows where status='FILLED' AND filled_price IS NULL,
+    fetches each by broker_order_id from Alpaca, and populates the fill
+    price/time. Dry-run (default) must never commit.
+    """
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_empty_db_nothing_to_do(self) -> None:
+        result = runner.invoke(app, ["repair-orders"])
+        assert result.exit_code == 0
+        assert "Nothing to do" in result.stdout
+
+    def _seed_unpriced_row(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.database import init_db
+        from bread.db.models import OrderLog
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        init_db(engine)
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="alpaca-123",
+                symbol="SPY", side="BUY", qty=10,
+                status="FILLED", filled_price=None,
+                strategy_name="etf_momentum", reason="seeded",
+                created_at_utc=datetime(2026, 4, 1, tzinfo=UTC),
+            ))
+            session.commit()
+        engine.dispose()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_dry_run_does_not_write(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        self._seed_unpriced_row(tmp_path)
+
+        mock_broker = MagicMock()
+        mock_broker.get_order_by_id.return_value = MagicMock(
+            filled_avg_price="500.0",
+            filled_at=datetime(2026, 4, 1, 15, 0, tzinfo=UTC),
+        )
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["repair-orders", "--dry-run"])
+
+        import re
+
+        assert result.exit_code == 0, result.stdout
+        assert "Found 1 FILLED rows" in result.stdout
+        assert re.search(r"repaired:\s+1\b", result.stdout)
+        assert "Dry run" in result.stdout
+
+        # Verify DB was NOT mutated
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.models import OrderLog
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            row = session.query(OrderLog).first()
+            assert row is not None
+            assert row.filled_price is None  # unchanged
+            assert row.filled_at_utc is None
+        engine.dispose()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_real_run_writes_fill_with_paper_cost(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        self._seed_unpriced_row(tmp_path)
+
+        fill_time = datetime(2026, 4, 1, 15, 0, tzinfo=UTC)
+        mock_broker = MagicMock()
+        mock_broker.get_order_by_id.return_value = MagicMock(
+            filled_avg_price="500.0",
+            filled_at=fill_time,
+        )
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["repair-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "Done" in result.stdout
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.models import OrderLog
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            row = session.query(OrderLog).first()
+            assert row is not None
+            assert row.raw_filled_price == 500.0
+            # Paper cost model: BUY adjusted up by slippage_pct (default 0.001)
+            assert row.filled_price == pytest.approx(500.0 * 1.001)
+            assert row.filled_at_utc is not None
+        engine.dispose()
+
+        mock_broker.get_order_by_id.assert_called_once_with("alpaca-123")
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_rejects_malformed_since(self) -> None:
+        result = runner.invoke(app, ["repair-orders", "--since", "not-a-date"])
+        assert result.exit_code == 1
+        # Error message is written via typer.echo(err=True) → stderr.
+        assert "must be YYYY-MM-DD" in result.stderr

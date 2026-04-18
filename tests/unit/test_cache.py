@@ -395,7 +395,7 @@ class TestCachingDataProvider:
         cached.get_bars("SPY", date(2024, 1, 2), date(2024, 4, 19), "1Day")
 
         # Request with Sunday start (2023-12-31) — cache has Mon Jan 2 data
-        result = cached.get_bars("SPY", date(2023, 12, 31), date(2024, 4, 19), "1Day")
+        cached.get_bars("SPY", date(2023, 12, 31), date(2024, 4, 19), "1Day")
 
         # Should still be a cache hit since Dec 31 2023 was a Sunday,
         # and Jan 1 2024 was a holiday — first trading day is Jan 2

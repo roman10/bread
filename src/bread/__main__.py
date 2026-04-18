@@ -340,7 +340,9 @@ def _start_dashboard_thread(port: int) -> None:
 
     thread = threading.Thread(target=_serve, daemon=True, name="dashboard")
     thread.start()
-    typer.echo(f"Dashboard: http://0.0.0.0:{port}")
+    # Server binds 0.0.0.0 so Tailscale peers can reach it; the user
+    # clicks localhost (or the VM's Tailscale IP remotely).
+    typer.echo(f"Dashboard: http://localhost:{port}")
 
 
 @app.command("run")
