@@ -464,12 +464,16 @@ def status_cmd() -> None:
         try:
             open_orders = broker.get_orders(status="open")
             if open_orders:
+                from bread.execution.alpaca_broker import (
+                    normalize_alpaca_side,
+                    normalize_alpaca_status,
+                )
                 typer.echo(f"\nOpen Orders ({len(open_orders)}):")
                 for o in open_orders:
                     sym = str(o.symbol or "")
-                    side = str(o.side).upper()
+                    side = normalize_alpaca_side(o.side)
                     qty = int(float(o.qty or 0))
-                    status = str(o.status).upper()
+                    status = normalize_alpaca_status(o.status)
                     typer.echo(f"  {sym:<5} {side}  qty={qty}  status={status}")
             else:
                 typer.echo("\nNo open orders")
@@ -571,6 +575,132 @@ def dashboard_cmd(
         dash_app = create_app(config)
         typer.echo(f"Starting dashboard at http://localhost:{port}")
         dash_app.run(host="127.0.0.1", port=port, debug=debug)
+    except BreadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+
+@app.command("repair-orders")
+def repair_orders_cmd(
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--no-dry-run",
+        help="Preview changes without writing (default: dry-run).",
+    ),
+    since: str = typer.Option(
+        None, "--since",
+        help="Only repair orders created on or after this date (YYYY-MM-DD).",
+    ),
+    batch_size: int = typer.Option(
+        100, "--batch-size",
+        help="Commit chunk size during the real run.",
+    ),
+) -> None:
+    """Backfill filled_price / filled_at_utc for FILLED orders from Alpaca.
+
+    Historical rows written before the status-normalization fix have
+    status='FILLED' but no fill price (the fill-capture branch in
+    _reconcile_orders was skipped due to the ORDERSTATUS.FILLED mismatch).
+    This command re-fetches each such order from Alpaca by broker_order_id
+    and populates raw_filled_price, filled_price (with paper-cost model),
+    and filled_at_utc. Idempotent — already-repaired rows are skipped.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from bread.db.models import OrderLog
+    from bread.execution.alpaca_broker import AlpacaBroker
+    from bread.execution.engine import adjust_fill_price
+
+    try:
+        config = load_config()
+        setup_logging(config.app.log_level)
+        engine_db = get_engine(config.db.path)
+        init_db(engine_db)
+        sf = get_session_factory(engine_db)
+
+        since_dt: datetime | None = None
+        if since:
+            try:
+                since_dt = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError as exc:
+                typer.echo(f"Error: --since must be YYYY-MM-DD, got {since!r}", err=True)
+                raise SystemExit(1) from exc
+
+        with sf() as session:
+            stmt = select(OrderLog).where(
+                OrderLog.status == "FILLED",
+                OrderLog.filled_price.is_(None),
+                OrderLog.broker_order_id.is_not(None),
+            )
+            if since_dt is not None:
+                stmt = stmt.where(OrderLog.created_at_utc >= since_dt)
+            stmt = stmt.order_by(OrderLog.created_at_utc.asc())
+            targets = list(session.execute(stmt).scalars().all())
+
+            typer.echo(f"Found {len(targets)} FILLED rows needing backfill.")
+            if not targets:
+                typer.echo("Nothing to do.")
+                return
+
+            broker = AlpacaBroker(config)
+
+            repaired = 0
+            missing_on_broker = 0
+            no_fill_price = 0
+            sample: list[str] = []
+            committed_since_last = 0
+
+            for idx, row in enumerate(targets, start=1):
+                broker_order = broker.get_order_by_id(row.broker_order_id or "")
+                if broker_order is None:
+                    missing_on_broker += 1
+                    logger.debug(
+                        "Broker has no order for %s (id=%s)", row.symbol, row.broker_order_id
+                    )
+                    continue
+                raw_value = getattr(broker_order, "filled_avg_price", None)
+                if raw_value is None:
+                    no_fill_price += 1
+                    continue
+
+                raw = float(raw_value)
+                adjusted = adjust_fill_price(config, raw, row.side)
+                row.raw_filled_price = raw
+                row.filled_price = adjusted
+                row.filled_at_utc = broker_order.filled_at
+                repaired += 1
+
+                if len(sample) < 10:
+                    sample.append(
+                        f"  {row.symbol:<5} {row.side}  qty={row.qty}"
+                        f"  raw={raw:.2f}  adj={adjusted:.2f}  at={broker_order.filled_at}"
+                    )
+
+                if not dry_run:
+                    committed_since_last += 1
+                    if committed_since_last >= batch_size:
+                        session.commit()
+                        committed_since_last = 0
+                        typer.echo(f"  … committed {idx}/{len(targets)}")
+
+            if not dry_run and committed_since_last:
+                session.commit()
+            elif dry_run:
+                session.rollback()
+
+        typer.echo("\nSummary:")
+        typer.echo(f"  repaired:          {repaired}")
+        typer.echo(f"  missing_on_broker: {missing_on_broker}")
+        typer.echo(f"  no_fill_price:     {no_fill_price}")
+        if sample:
+            typer.echo("\nSample updates:")
+            for line in sample:
+                typer.echo(line)
+        if dry_run:
+            typer.echo("\nDry run — no changes committed. Re-run with --no-dry-run to apply.")
+        else:
+            typer.echo("\nDone.")
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc

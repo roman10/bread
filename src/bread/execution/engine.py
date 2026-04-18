@@ -11,6 +11,7 @@ from sqlalchemy import select
 from bread.core.exceptions import OrderError
 from bread.core.models import OrderSide, OrderStatus, Position, SignalDirection
 from bread.db.models import OrderLog, PortfolioSnapshot
+from bread.execution.alpaca_broker import normalize_alpaca_status
 from bread.risk.context import RiskContext, RiskContextRepo
 from bread.risk.limits import check_bracket_prices
 
@@ -25,6 +26,28 @@ if TYPE_CHECKING:
     from bread.risk.manager import RiskManager
 
 logger = logging.getLogger(__name__)
+
+
+def adjust_fill_price(config: AppConfig, raw_price: float, side: str) -> float:
+    """Apply paper trading cost model to a fill price.
+
+    Alpaca paper trading fills at quoted prices with no real spread or
+    slippage.  This simulates real-world friction by penalizing fills:
+    - BUY:  price * (1 + slippage_pct)  — we pay more than quoted
+    - SELL: price * (1 - slippage_pct)  — we receive less than quoted
+
+    Only applied when mode='paper' and paper_cost.enabled is True.
+    Live-mode fills already include real market friction.
+    """
+    if config.mode != "paper":
+        return raw_price
+    cost = config.execution.paper_cost
+    if not cost.enabled:
+        return raw_price
+
+    if side == "BUY":
+        return raw_price * (1.0 + cost.slippage_pct)
+    return raw_price * (1.0 - cost.slippage_pct)
 
 
 class ExecutionEngine:
@@ -44,28 +67,6 @@ class ExecutionEngine:
         self._positions: dict[str, Position] = {}
         self._last_reviews: dict[str, SignalReview] = {}
         self._risk_context = RiskContextRepo(session_factory)
-
-    def _adjust_fill_price(self, raw_price: float, side: str) -> float:
-        """Apply paper trading cost model to a fill price.
-
-        Alpaca paper trading fills at quoted prices with no real spread or
-        slippage.  This simulates real-world friction by penalizing fills:
-        - BUY:  price * (1 + slippage_pct)  — we pay more than quoted
-        - SELL: price * (1 - slippage_pct)  — we receive less than quoted
-
-        Only applied when mode='paper' and paper_cost.enabled is True.
-        Live-mode fills already include real market friction.
-        """
-        if self._config.mode != "paper":
-            return raw_price
-        cost = self._config.execution.paper_cost
-        if not cost.enabled:
-            return raw_price
-
-        if side == "BUY":
-            return raw_price * (1.0 + cost.slippage_pct)
-        else:  # SELL
-            return raw_price * (1.0 - cost.slippage_pct)
 
     def reconcile(self) -> None:
         """Sync local state with broker positions.
@@ -142,7 +143,10 @@ class ExecutionEngine:
                     if broker_order is None:
                         continue
 
-                    new_status = str(broker_order.status).upper()
+                    new_status = normalize_alpaca_status(broker_order.status)
+                    if new_status == "UNKNOWN":
+                        # Don't overwrite a valid prior status with garbage.
+                        continue
                     if new_status == order.status:
                         continue
 
@@ -152,10 +156,9 @@ class ExecutionEngine:
                             raw_price = float(broker_order.filled_avg_price)
                             order.raw_filled_price = raw_price
                             # Apply paper trading cost model (slippage/spread).
-                            # In live mode, _adjust_fill_price returns raw_price unchanged.
-                            order.filled_price = self._adjust_fill_price(
-                                raw_price,
-                                order.side,
+                            # In live mode, adjust_fill_price returns raw_price unchanged.
+                            order.filled_price = adjust_fill_price(
+                                self._config, raw_price, order.side
                             )
                         order.filled_at_utc = broker_order.filled_at
                         if (
@@ -258,15 +261,19 @@ class ExecutionEngine:
                 logger.debug("SELL signal for %s ignored — no position", sig.symbol)
                 continue
             try:
+                position = self._positions[sig.symbol]
                 order_id = self._broker.close_position(sig.symbol)
                 if order_id:
+                    # Log SELL with the OPENER's strategy_name, not the exit
+                    # signal's. Keeps the raw orders table self-consistent for
+                    # BUY/SELL pairs, and any consumer that groups by strategy.
                     self._log_order(
                         sig.symbol,
                         OrderSide.SELL,
-                        self._positions[sig.symbol].qty,
+                        position.qty,
                         OrderStatus.PENDING,
                         order_id,
-                        sig.strategy_name,
+                        position.strategy_name,
                         sig.reason,
                     )
                     del self._positions[sig.symbol]

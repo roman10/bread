@@ -16,7 +16,11 @@ from bread.dashboard.components import format_local_dt
 from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
 from bread.db.models import EventAlertLog, OrderLog, PortfolioSnapshot, SignalLog
-from bread.execution.alpaca_broker import AlpacaBroker
+from bread.execution.alpaca_broker import (
+    AlpacaBroker,
+    normalize_alpaca_side,
+    normalize_alpaca_status,
+)
 from bread.monitoring.journal import (
     get_all_strategies_summary,
     get_journal,
@@ -148,10 +152,10 @@ class DashboardData:
             return [
                 {
                     "symbol": o.symbol,
-                    "side": str(o.side).upper(),
+                    "side": normalize_alpaca_side(o.side),
                     "qty": str(o.qty),
-                    "status": str(o.status).upper(),
-                    "type": str(o.type).upper() if o.type else "",
+                    "status": normalize_alpaca_status(o.status),
+                    "type": str(getattr(o.type, "value", o.type)).upper() if o.type else "",
                     "submitted_at": format_local_dt(o.submitted_at, fmt="%Y-%m-%d %-I:%M %p %Z"),
                 }
                 for o in orders

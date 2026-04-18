@@ -299,3 +299,96 @@ class TestAlpacaBroker:
 
         assert len(positions) == 1
         assert positions[0].symbol == "SPY"
+
+
+class TestNormalizeAlpacaStatus:
+    """Regression for the ORDERSTATUS.FILLED bug.
+
+    Alpaca's `OrderStatus` is `str, Enum` — `str(enum)` returns the
+    class-prefixed form ("OrderStatus.FILLED"), not the value ("filled").
+    Previous code used `str(...).upper()` and stored "ORDERSTATUS.FILLED"
+    in the DB, blocking the journal query and the fill-capture branch.
+    """
+
+    def test_str_enum_value_is_used_not_class_prefixed_name(self) -> None:
+        """The exact shape that produced the bug: a `str, Enum` instance.
+
+        Python's default `str(SomeEnum.FILLED)` returns 'SomeEnum.FILLED'.
+        normalize_alpaca_status must use `.value` to recover the token.
+        """
+        from enum import Enum
+
+        from bread.execution.alpaca_broker import normalize_alpaca_status
+
+        # `str, Enum` (not StrEnum) is intentional — it reproduces the exact
+        # shape of Alpaca's SDK enum. StrEnum's `str(...)` returns the value;
+        # `str, Enum`'s returns the class-prefixed name. That's the bug.
+        class FakeAlpacaStatus(str, Enum):  # noqa: UP042
+            FILLED = "filled"
+            CANCELED = "canceled"
+            NEW = "new"
+
+        assert str(FakeAlpacaStatus.FILLED) == "FakeAlpacaStatus.FILLED"
+        assert normalize_alpaca_status(FakeAlpacaStatus.FILLED) == "FILLED"
+        assert normalize_alpaca_status(FakeAlpacaStatus.CANCELED) == "CANCELLED"
+        assert normalize_alpaca_status(FakeAlpacaStatus.NEW) == "PENDING"
+
+    def test_plain_string_input(self) -> None:
+        from bread.execution.alpaca_broker import normalize_alpaca_status
+
+        assert normalize_alpaca_status("filled") == "FILLED"
+        assert normalize_alpaca_status("FILLED") == "FILLED"
+        assert normalize_alpaca_status("canceled") == "CANCELLED"
+        assert normalize_alpaca_status("partially_filled") == "ACCEPTED"
+
+    def test_none_returns_unknown(self) -> None:
+        from bread.execution.alpaca_broker import normalize_alpaca_status
+
+        assert normalize_alpaca_status(None) == "UNKNOWN"
+
+    def test_unknown_value_returns_unknown_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import logging
+
+        from bread.execution.alpaca_broker import normalize_alpaca_status
+
+        with caplog.at_level(logging.WARNING, logger="bread.execution.alpaca_broker"):
+            assert normalize_alpaca_status("some_new_alpaca_state") == "UNKNOWN"
+        assert any("Unrecognized Alpaca order status" in r.message for r in caplog.records)
+
+    def test_all_alpaca_states_map_to_our_enum(self) -> None:
+        """Every value in the mapping table resolves to a known OrderStatus value."""
+        from bread.core.models import OrderStatus
+        from bread.execution.alpaca_broker import _ALPACA_STATUS_MAP, normalize_alpaca_status
+
+        valid = {s.value for s in OrderStatus}
+        for alpaca_value, mapped in _ALPACA_STATUS_MAP.items():
+            assert mapped in valid, f"{alpaca_value} -> {mapped} not in OrderStatus"
+            assert normalize_alpaca_status(alpaca_value) == mapped
+
+
+class TestNormalizeAlpacaSide:
+    def test_maps_buy_sell(self) -> None:
+        from bread.execution.alpaca_broker import normalize_alpaca_side
+
+        assert normalize_alpaca_side("buy") == "BUY"
+        assert normalize_alpaca_side("SELL") == "SELL"
+
+    def test_enum_input(self) -> None:
+        from enum import Enum
+
+        from bread.execution.alpaca_broker import normalize_alpaca_side
+
+        class FakeSide(str, Enum):  # noqa: UP042  # matches Alpaca SDK enum shape
+            BUY = "buy"
+            SELL = "sell"
+
+        assert normalize_alpaca_side(FakeSide.BUY) == "BUY"
+        assert normalize_alpaca_side(FakeSide.SELL) == "SELL"
+
+    def test_none_and_unknown(self) -> None:
+        from bread.execution.alpaca_broker import normalize_alpaca_side
+
+        assert normalize_alpaca_side(None) == ""
+        assert normalize_alpaca_side("garbage") == ""

@@ -214,6 +214,49 @@ class TestGetJournal:
         assert entries[0].hold_days == 0
         assert entries[0].pnl == 50.0
 
+    def test_pairs_buy_sell_when_strategies_differ(self) -> None:
+        """FIFO pairing keys on symbol only — BUY/SELL attributed to different
+        strategies still pair. The resulting entry's strategy_name is the
+        opener's (the strategy that selected the trade).
+        """
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="ema_crossover")
+        _fill(sf, "SPY", "SELL", 10, 510.0, t2, strategy="bb_mean_reversion")
+
+        with sf() as session:
+            entries = get_journal(session)
+
+        assert len(entries) == 1
+        e = entries[0]
+        assert e.strategy_name == "ema_crossover"
+        assert e.pnl == 100.0
+
+    def test_fifo_pairing_on_symbol_does_not_cross_lots(self) -> None:
+        """Multiple B/S pairs on the same symbol with mixed strategy attribution
+        are paired in filled_at order; each pair takes its BUY's strategy.
+        """
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        t3 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
+        t4 = datetime(2026, 3, 15, 14, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="ema_crossover")
+        _fill(sf, "SPY", "SELL", 10, 520.0, t2, strategy="etf_momentum")
+        _fill(sf, "SPY", "BUY", 5, 510.0, t3, strategy="macd_divergence")
+        _fill(sf, "SPY", "SELL", 5, 505.0, t4, strategy="bb_mean_reversion")
+
+        with sf() as session:
+            entries = get_journal(session)
+
+        assert len(entries) == 2
+        # Sorted by exit_date desc
+        assert entries[0].pnl == -25.0
+        assert entries[0].strategy_name == "macd_divergence"
+        assert entries[1].pnl == 200.0
+        assert entries[1].strategy_name == "ema_crossover"
+
 
 class TestGetJournalSummary:
     def test_empty_entries(self) -> None:

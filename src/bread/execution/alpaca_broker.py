@@ -32,6 +32,60 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+_ALPACA_STATUS_MAP: dict[str, str] = {
+    "new": "PENDING",
+    "pending_new": "PENDING",
+    "accepted": "ACCEPTED",
+    "accepted_for_bidding": "ACCEPTED",
+    "pending_cancel": "ACCEPTED",
+    "pending_replace": "ACCEPTED",
+    "replaced": "ACCEPTED",
+    "held": "ACCEPTED",
+    "suspended": "ACCEPTED",
+    "calculated": "ACCEPTED",
+    # partial fills stay ACCEPTED: the current pipeline only submits full-qty
+    # market brackets, so partials are unreachable today. Revisit if partial
+    # fills become a real path.
+    "partially_filled": "ACCEPTED",
+    "filled": "FILLED",
+    "canceled": "CANCELLED",
+    "expired": "CANCELLED",
+    "done_for_day": "CANCELLED",
+    "stopped": "CANCELLED",
+    "rejected": "REJECTED",
+}
+
+
+def normalize_alpaca_status(raw: object) -> str:
+    """Map an Alpaca order status into our bread.core.models.OrderStatus value.
+
+    Alpaca's `OrderStatus` is a `str, Enum` (not `StrEnum`), so `str(enum)`
+    returns the class-prefixed name ("OrderStatus.FILLED") rather than the
+    value. Use `.value` (or the raw token) to get the canonical string.
+    Accepts enum instance, plain string, or None. Unknown values return
+    "UNKNOWN" and log a warning — never raise.
+    """
+    if raw is None:
+        return "UNKNOWN"
+    token = str(getattr(raw, "value", raw)).lower()
+    mapped = _ALPACA_STATUS_MAP.get(token)
+    if mapped is None:
+        logger.warning("Unrecognized Alpaca order status: %r", raw)
+        return "UNKNOWN"
+    return mapped
+
+
+def normalize_alpaca_side(raw: object) -> str:
+    """Map an Alpaca order side to 'BUY' or 'SELL' (or '' for unknown)."""
+    if raw is None:
+        return ""
+    token = str(getattr(raw, "value", raw)).upper()
+    if token in ("BUY", "SELL"):
+        return token
+    return ""
+
+
 _read_retrier = Retrying(
     retry=retry_if_exception_type((ConnectionError, Timeout, ProtocolError)),
     stop=stop_after_attempt(3),
@@ -100,6 +154,17 @@ class AlpacaBroker:
             )
         except Exception as exc:
             raise ExecutionError(f"Failed to get orders: {exc}") from exc
+
+    def get_order_by_id(self, order_id: str) -> AlpacaOrder | None:
+        """Fetch a single order by its Alpaca order ID. Returns None if not found."""
+        try:
+            result = _read_retrier(self._client.get_order_by_id, order_id=order_id)
+            return result  # type: ignore[return-value]
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "404" in msg:
+                return None
+            raise ExecutionError(f"Failed to get order {order_id}: {exc}") from exc
 
     def submit_bracket_order(
         self,

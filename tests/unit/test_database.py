@@ -145,3 +145,67 @@ class TestMigrateDb:
         Base.metadata.create_all(eng)
         migrate_db(eng)  # first run (column already exists from create_all)
         migrate_db(eng)  # second run — should be a no-op
+
+    def test_rewrites_legacy_orderstatus_values(self) -> None:
+        """Regression for Bug 1: pre-fix rows stored 'ORDERSTATUS.<X>' in the
+        status column. The migration must rewrite them to our canonical
+        OrderStatus values and be idempotent on a second run.
+        """
+        eng = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
+
+        legacy_rows = [
+            ("A1", "SPY", "BUY",  10, "ORDERSTATUS.FILLED"),
+            ("A2", "QQQ", "BUY",   5, "ORDERSTATUS.NEW"),
+            ("A3", "IWM", "SELL", 10, "ORDERSTATUS.CANCELED"),
+            ("A4", "DIA", "BUY",   1, "ORDERSTATUS.REJECTED"),
+            ("A5", "XLK", "BUY",   2, "ORDERSTATUS.PARTIALLY_FILLED"),
+            ("A6", "XLF", "BUY",   1, "ORDERSTATUS.PENDING_NEW"),
+            ("A7", "XLE", "BUY",   1, "ORDERSTATUS.EXPIRED"),
+            ("A8", "GLD", "BUY",   1, "ORDERSTATUS.DONE_FOR_DAY"),
+        ]
+        with eng.connect() as conn:
+            raw = conn.connection
+            cur = raw.cursor()
+            for bid, sym, side, qty, status in legacy_rows:
+                cur.execute(
+                    "INSERT INTO orders"
+                    " (broker_order_id, symbol, side, qty, status,"
+                    "  strategy_name, reason, created_at_utc)"
+                    " VALUES (?, ?, ?, ?, ?, 'x', 'x', '2026-01-01')",
+                    (bid, sym, side, qty, status),
+                )
+            raw.commit()
+
+        migrate_db(eng)
+
+        with eng.connect() as conn:
+            raw = conn.connection
+            cur = raw.cursor()
+            rows = dict(
+                cur.execute("SELECT broker_order_id, status FROM orders").fetchall()
+            )
+            assert rows == {
+                "A1": "FILLED",
+                "A2": "PENDING",
+                "A3": "CANCELLED",
+                "A4": "REJECTED",
+                "A5": "ACCEPTED",
+                "A6": "PENDING",
+                "A7": "CANCELLED",
+                "A8": "CANCELLED",
+            }
+            legacy_left = cur.execute(
+                "SELECT COUNT(*) FROM orders WHERE status LIKE 'ORDERSTATUS.%'"
+            ).fetchone()[0]
+            assert legacy_left == 0
+
+        # Second run: no-op. Values stay canonical.
+        migrate_db(eng)
+        with eng.connect() as conn:
+            raw = conn.connection
+            cur = raw.cursor()
+            rows2 = dict(
+                cur.execute("SELECT broker_order_id, status FROM orders").fetchall()
+            )
+            assert rows2 == rows

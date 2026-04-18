@@ -141,6 +141,43 @@ class TestProcessSignals:
         mock_broker.close_position.assert_called_once_with("SPY")
         assert "SPY" not in engine._positions
 
+    def test_sell_logs_opener_strategy_not_exit_signal_strategy(
+        self, monkeypatch
+    ) -> None:
+        """Regression for Bug 2: the SELL row's strategy_name must be the
+        strategy that OPENED the position, not the one that emitted the SELL.
+        Otherwise FIFO pair-matching would require both sides to share a name
+        which isn't true when one strategy holds positions that another's
+        exit rule closes.
+        """
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        opener_position = Position(
+            symbol="SPY", qty=10, entry_price=500.0,
+            stop_loss_price=475.0, take_profit_price=525.0,
+            broker_order_id="open-1", strategy_name="ema_crossover",
+            entry_date=date.today(),
+        )
+        engine._positions["SPY"] = opener_position
+        mock_broker.close_position.return_value = "close-1"
+
+        exit_signal = Signal(
+            symbol="SPY", direction=SignalDirection.SELL,
+            strength=0.8, stop_loss_pct=0.05,
+            strategy_name="bb_mean_reversion",  # different from opener
+            reason="rsi>70", timestamp=datetime.now(UTC),
+        )
+        engine.process_signals([exit_signal], {"SPY": 510.0})
+
+        with sf() as session:
+            sell_row = (
+                session.execute(select(OrderLog).where(OrderLog.side == "SELL"))
+                .scalars().first()
+            )
+            assert sell_row is not None
+            assert sell_row.strategy_name == "ema_crossover"
+            # Reason still reflects the exit signal
+            assert sell_row.reason == "rsi>70"
+
     def test_sell_without_position_ignored(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
 
@@ -281,6 +318,97 @@ class TestSaveSnapshot:
 
 
 class TestReconcileOrders:
+    def test_status_stored_as_clean_enum_value_not_class_prefixed(
+        self, monkeypatch
+    ) -> None:
+        """Regression for Bug 1: Alpaca's OrderStatus is `str, Enum`, so
+        `str(enum)` returns 'OrderStatus.FILLED' rather than 'filled'. Prior
+        code stored 'ORDERSTATUS.FILLED' in the DB, which broke the journal
+        query and the fill-capture branch. Reconcile must normalize to our
+        canonical OrderStatus values ('FILLED', 'CANCELLED', ...).
+        """
+        from enum import Enum
+
+        # `str, Enum` (not StrEnum) is intentional — StrEnum's str() returns
+        # the value; `str, Enum`'s returns the class-prefixed name. That's
+        # precisely the Alpaca SDK shape that produced the original bug.
+        class FakeAlpacaStatus(str, Enum):  # noqa: UP042
+            FILLED = "filled"
+
+        assert str(FakeAlpacaStatus.FILLED) == "FakeAlpacaStatus.FILLED"  # shape of the bug
+
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="order-regression",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
+            session.commit()
+
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-regression",
+                status=FakeAlpacaStatus.FILLED,  # the buggy shape
+                filled_avg_price="500.0",
+                filled_at=now + timedelta(minutes=1),
+            ),
+        ]
+
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "FILLED"  # not "ORDERSTATUS.FILLED"
+            assert order.filled_price is not None
+            assert order.filled_at_utc is not None
+
+    def test_unknown_status_does_not_overwrite(self, monkeypatch) -> None:
+        """A vendor status we don't recognize must leave the row alone, not
+        stamp 'UNKNOWN' over a valid prior status.
+        """
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="order-xyz",
+                    symbol="QQQ",
+                    side="BUY",
+                    qty=3,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="test",
+                    created_at_utc=now,
+                )
+            )
+            session.commit()
+
+        mock_broker.get_orders.return_value = [
+            SimpleNamespace(
+                id="order-xyz",
+                status="some_new_unrecognized_state",
+                filled_avg_price=None,
+                filled_at=None,
+            ),
+        ]
+
+        engine._reconcile_orders()
+
+        with sf() as session:
+            order = session.execute(select(OrderLog)).scalars().first()
+            assert order is not None
+            assert order.status == "PENDING"  # unchanged
+
     def test_updates_filled_order(self, monkeypatch) -> None:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         # Insert a pending order
@@ -344,7 +472,7 @@ class TestReconcileOrders:
         mock_broker.get_orders.return_value = [
             SimpleNamespace(
                 id="order-2",
-                status="cancelled",
+                status="canceled",  # Alpaca spelling (single L)
                 filled_avg_price=None,
                 filled_at=None,
             ),
@@ -510,26 +638,34 @@ class TestPaperCostAdjustment:
     """
 
     def test_adjust_fill_price_buy_paper(self, monkeypatch) -> None:
+        from bread.execution.engine import adjust_fill_price
+
         engine, _, _, _ = _make_engine(monkeypatch)
-        adjusted = engine._adjust_fill_price(500.0, "BUY")
+        adjusted = adjust_fill_price(engine._config, 500.0, "BUY")
         assert adjusted == pytest.approx(500.0 * 1.001)
 
     def test_adjust_fill_price_sell_paper(self, monkeypatch) -> None:
+        from bread.execution.engine import adjust_fill_price
+
         engine, _, _, _ = _make_engine(monkeypatch)
-        adjusted = engine._adjust_fill_price(500.0, "SELL")
+        adjusted = adjust_fill_price(engine._config, 500.0, "SELL")
         assert adjusted == pytest.approx(500.0 * 0.999)
 
     def test_adjust_fill_price_live_unchanged(self, monkeypatch) -> None:
+        from bread.execution.engine import adjust_fill_price
+
         engine, _, _, _ = _make_engine(monkeypatch)
         engine._config.mode = "live"
-        assert engine._adjust_fill_price(500.0, "BUY") == 500.0
-        assert engine._adjust_fill_price(500.0, "SELL") == 500.0
+        assert adjust_fill_price(engine._config, 500.0, "BUY") == 500.0
+        assert adjust_fill_price(engine._config, 500.0, "SELL") == 500.0
 
     def test_adjust_fill_price_disabled(self, monkeypatch) -> None:
+        from bread.execution.engine import adjust_fill_price
+
         engine, _, _, _ = _make_engine(monkeypatch)
         engine._config.execution.paper_cost.enabled = False
-        assert engine._adjust_fill_price(500.0, "BUY") == 500.0
-        assert engine._adjust_fill_price(500.0, "SELL") == 500.0
+        assert adjust_fill_price(engine._config, 500.0, "BUY") == 500.0
+        assert adjust_fill_price(engine._config, 500.0, "SELL") == 500.0
 
     def test_reconcile_stores_raw_and_adjusted(self, monkeypatch) -> None:
         """BUY order should have raw_filled_price < filled_price (slippage)."""

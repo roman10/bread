@@ -44,8 +44,9 @@ def get_journal(
 ) -> list[JournalEntry]:
     """Query completed round-trip trades from OrderLog.
 
-    Pairs BUY fills with subsequent SELL fills for the same symbol+strategy.
-    Returns entries sorted by exit_date descending (most recent first).
+    Pairs BUY fills with subsequent SELL fills by symbol (FIFO). Attribution
+    (JournalEntry.strategy_name) comes from the BUY row — the strategy that
+    selected the trade. Returns entries sorted by exit_date descending.
     """
     query = (
         select(OrderLog)
@@ -55,28 +56,30 @@ def get_journal(
 
     rows = session.execute(query).scalars().all()
 
-    # Separate buys and sells
-    buys: dict[tuple[str, str], list[OrderLog]] = {}
-    sells: dict[tuple[str, str], list[OrderLog]] = {}
+    # Separate buys and sells by symbol only. The engine enforces one open
+    # position per symbol (engine rejects BUY if symbol already held; SELL is
+    # only emitted when a position exists), so the interleaved sequence for
+    # any symbol is B1,S1,B2,S2,... — FIFO on symbol alone cannot cross
+    # unrelated lots. The pair's strategy_name is taken from the BUY row
+    # (the strategy that selected the trade); exit attribution remains
+    # queryable via the raw SELL row's strategy_name.
+    buys: dict[str, list[OrderLog]] = {}
+    sells: dict[str, list[OrderLog]] = {}
 
     for row in rows:
-        key = (row.symbol, row.strategy_name)
         if row.side == "BUY":
-            buys.setdefault(key, []).append(row)
+            buys.setdefault(row.symbol, []).append(row)
         elif row.side == "SELL":
-            sells.setdefault(key, []).append(row)
+            sells.setdefault(row.symbol, []).append(row)
 
     # Pair: for each sell, match the earliest unmatched buy (FIFO)
     entries: list[JournalEntry] = []
-    for key, sell_list in sells.items():
-        buy_list = buys.get(key, [])
+    for sym, sell_list in sells.items():
+        buy_list = buys.get(sym, [])
         buy_idx = 0
         for sell_order in sell_list:
             if buy_idx >= len(buy_list):
-                logger.debug(
-                    "Orphan SELL for %s/%s — no unmatched BUY",
-                    key[0], key[1],
-                )
+                logger.debug("Orphan SELL for %s — no unmatched BUY", sym)
                 continue
 
             buy_order = buy_list[buy_idx]
@@ -88,18 +91,12 @@ def get_journal(
                 and sell_order.filled_at_utc is not None
                 and buy_order.filled_at_utc > sell_order.filled_at_utc
             ):
-                logger.debug(
-                    "BUY after SELL for %s — skipping pair",
-                    key[0],
-                )
+                logger.debug("BUY after SELL for %s — skipping pair", sym)
                 continue
 
             # Skip if either fill price is missing
             if buy_order.filled_price is None or sell_order.filled_price is None:
-                logger.debug(
-                    "Missing fill price for %s — skipping pair",
-                    key[0],
-                )
+                logger.debug("Missing fill price for %s — skipping pair", sym)
                 continue
 
             entry_price = float(buy_order.filled_price)
@@ -116,8 +113,8 @@ def get_journal(
             hold_days = (exit_dt - entry_dt).days
 
             entry = JournalEntry(
-                symbol=key[0],
-                strategy_name=key[1],
+                symbol=sym,
+                strategy_name=buy_order.strategy_name,
                 entry_date=entry_dt,
                 entry_price=entry_price,
                 exit_date=exit_dt,
