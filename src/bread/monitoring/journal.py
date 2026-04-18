@@ -40,13 +40,16 @@ def get_journal(
     end: date | None = None,
     strategy: str | None = None,
     symbol: str | None = None,
-    limit: int = 100,
+    limit: int = 10_000,
 ) -> list[JournalEntry]:
     """Query completed round-trip trades from OrderLog.
 
     Pairs BUY fills with subsequent SELL fills by symbol (FIFO). Attribution
     (JournalEntry.strategy_name) comes from the BUY row — the strategy that
     selected the trade. Returns entries sorted by exit_date descending.
+
+    Default limit is deliberately high so summary stats computed on the
+    returned list aren't silently distorted by truncation.
     """
     query = (
         select(OrderLog)
@@ -210,8 +213,7 @@ def get_all_strategies_summary(
     total_pnl descending so the best earner appears first.
     """
     start = date.today() - timedelta(days=days)
-    # Pull a generous limit so the leaderboard isn't silently truncated.
-    entries = get_journal(session, start=start, limit=10_000)
+    entries = get_journal(session, start=start)
 
     by_strategy: dict[str, list[JournalEntry]] = {}
     for e in entries:
