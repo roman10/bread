@@ -19,10 +19,10 @@ def make_kpi_card(
         dbc.CardBody(
             [
                 html.H6(
-                    title, className="card-title text-muted mb-1", style={"fontSize": "0.75rem"}
+                    title, className="card-title mb-1 opacity-75", style={"fontSize": "0.75rem"}
                 ),
                 html.H4(value, className=f"text-{color} mb-0", style={"fontWeight": "600"}),
-                html.Small(subtitle, className="text-muted") if subtitle else html.Span(),
+                html.Small(subtitle, className="opacity-75") if subtitle else html.Span(),
             ]
         ),
         className="h-100",

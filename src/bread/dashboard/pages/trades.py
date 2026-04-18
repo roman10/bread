@@ -73,7 +73,7 @@ layout = dbc.Container([
     # Filters
     dbc.Row([
         dbc.Col([
-            dbc.Label("Strategy", className="text-muted small"),
+            dbc.Label("Strategy", className="small"),
             dcc.Dropdown(
                 id="trades-strategy-filter",
                 placeholder="All strategies",
@@ -82,14 +82,14 @@ layout = dbc.Container([
             ),
         ], md=3),
         dbc.Col([
-            dbc.Label("Symbol", className="text-muted small"),
+            dbc.Label("Symbol", className="small"),
             dbc.Input(
                 id="trades-symbol-filter", type="text",
                 placeholder="e.g. SPY", debounce=True,
             ),
         ], md=2),
         dbc.Col([
-            dbc.Label("Lookback (days)", className="text-muted small"),
+            dbc.Label("Lookback (days)", className="small"),
             dcc.Slider(
                 id="trades-days-filter",
                 min=7, max=365, step=None, value=30,
@@ -97,7 +97,7 @@ layout = dbc.Container([
             ),
         ], md=4),
         dbc.Col([
-            dbc.Label("P&L Period", className="text-muted small"),
+            dbc.Label("P&L Period", className="small"),
             dbc.RadioItems(
                 id="trades-period-toggle",
                 options=[
@@ -114,7 +114,7 @@ layout = dbc.Container([
     # P&L chart
     html.Div(id="pnl-chart"),
     # Journal table
-    html.H6("Trade Journal", className="text-muted mb-2 mt-3"),
+    html.H6("Trade Journal", className="mb-2 mt-3"),
     html.Div(id="journal-table"),
 ], fluid=True)
 
@@ -175,7 +175,7 @@ def update_journal(
 
     # Journal table
     if not entries:
-        table = html.P("No completed trades in this period.", className="text-muted")
+        table = html.P("No completed trades in this period.", className="opacity-75")
     else:
         rows = [
             {

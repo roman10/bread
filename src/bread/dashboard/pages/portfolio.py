@@ -505,7 +505,7 @@ _EVENT_COLS = [
 layout = dbc.Container(
     [
         html.Div(id="portfolio-kpi-row"),
-        html.H6("Bot Activity", className="text-muted mb-2 mt-3"),
+        html.H6("Bot Activity", className="mb-2 mt-3"),
         html.Div(id="bot-activity-row"),
         dbc.Row(
             [
@@ -514,10 +514,10 @@ layout = dbc.Container(
             ],
             className="mb-4",
         ),
-        html.H6("Strategy Status", className="text-muted mb-2"),
+        html.H6("Strategy Status", className="mb-2"),
         html.Small(
             "Click a strategy name to learn how it works.",
-            className="text-muted d-block mb-2",
+            className="d-block mb-2 opacity-75",
         ),
         html.Div(id="strategy-status-panel"),
         dbc.Modal(
@@ -537,11 +537,11 @@ layout = dbc.Container(
             size="lg",
             is_open=False,
         ),
-        html.H6("Open Positions", className="text-muted mb-2 mt-4"),
+        html.H6("Open Positions", className="mb-2 mt-4"),
         html.Div(id="positions-table"),
-        html.H6("Open Orders", className="text-muted mb-2 mt-4"),
+        html.H6("Open Orders", className="mb-2 mt-4"),
         html.Div(id="orders-table"),
-        html.H6("Recent Signals", className="text-muted mb-2 mt-4"),
+        html.H6("Recent Signals", className="mb-2 mt-4"),
         dbc.Row(
             [
                 dbc.Col(
@@ -559,10 +559,10 @@ layout = dbc.Container(
             className="mb-2",
         ),
         html.Div(id="signals-table"),
-        html.H6("Event Alerts", className="text-muted mb-2 mt-4"),
+        html.H6("Event Alerts", className="mb-2 mt-4"),
         html.Small(
             "Detected by Claude's research scanner.",
-            className="text-muted d-block mb-2",
+            className="d-block mb-2 opacity-75",
         ),
         html.Div(id="events-table"),
     ],
@@ -636,7 +636,7 @@ def update_positions(_n: int) -> dag.AgGrid | html.P:
     data = current_app.config["data"]
     positions = data.get_positions()
     if not positions:
-        return html.P("No open positions", className="text-muted")
+        return html.P("No open positions", className="opacity-75")
     return dag.AgGrid(
         rowData=positions,
         columnDefs=_POSITION_COLS,
@@ -655,7 +655,7 @@ def update_orders(_n: int) -> dag.AgGrid | html.P:
     data = current_app.config["data"]
     orders = data.get_open_orders()
     if not orders:
-        return html.P("No open orders", className="text-muted")
+        return html.P("No open orders", className="opacity-75")
     return dag.AgGrid(
         rowData=orders,
         columnDefs=_ORDER_COLS,
@@ -704,7 +704,7 @@ def update_strategy_status(_n: int) -> dag.AgGrid | html.P:
     data = current_app.config["data"]
     strategies = data.get_strategy_status()
     if not strategies:
-        return html.P("No strategies configured", className="text-muted")
+        return html.P("No strategies configured", className="opacity-75")
     return dag.AgGrid(
         id="strategy-status-grid",
         rowData=strategies,
@@ -765,7 +765,7 @@ def update_signals_table(strategy: str | None, _n: int) -> dag.AgGrid | html.P:
     data = current_app.config["data"]
     signals = data.get_recent_signals(hours=24, strategy=strategy)
     if not signals:
-        return html.P("No signals in the last 24 hours", className="text-muted")
+        return html.P("No signals in the last 24 hours", className="opacity-75")
     return dag.AgGrid(
         rowData=signals,
         columnDefs=_SIGNAL_COLS,
@@ -788,7 +788,7 @@ def update_events_table(_n: int) -> dag.AgGrid | html.P:
     data = current_app.config["data"]
     events = data.get_recent_events(hours=48)
     if not events:
-        return html.P("No recent event alerts", className="text-muted")
+        return html.P("No recent event alerts", className="opacity-75")
     return dag.AgGrid(
         rowData=events,
         columnDefs=_EVENT_COLS,

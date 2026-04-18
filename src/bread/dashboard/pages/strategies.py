@@ -111,7 +111,7 @@ layout = dbc.Container([
     html.Div(id="strategies-kpi-row"),
     dbc.Row([
         dbc.Col([
-            dbc.Label("Lookback (days)", className="text-muted small"),
+            dbc.Label("Lookback (days)", className="small"),
             dcc.Slider(
                 id="strategies-days-filter",
                 min=7, max=365, step=None, value=90,
@@ -119,14 +119,14 @@ layout = dbc.Container([
             ),
         ], md=6),
     ], className="mb-3"),
-    html.H6("Strategy Leaderboard", className="text-muted mb-2 mt-3"),
+    html.H6("Strategy Leaderboard", className="mb-2 mt-3"),
     html.Div(id="strategies-leaderboard-table"),
     html.P(
         "Strategies appear once they have at least one completed round-trip "
         "in the selected window. Ranking is by realized P&L (dollars). Use "
         "`bread compare` for backtest-based selection — paper sample sizes "
         "alone are too small for confident strategy choice.",
-        className="text-muted small mt-3",
+        className="small mt-3 opacity-75",
     ),
 ], fluid=True)
 
@@ -185,7 +185,7 @@ def update_leaderboard(days: int, _n: int) -> tuple:
         table = html.P(
             "No completed trades in this window. Strategies will appear here "
             "as soon as they generate round-trip trades.",
-            className="text-muted",
+            className="opacity-75",
         )
     else:
         table = dag.AgGrid(
