@@ -284,14 +284,25 @@ class ExecutionEngine:
         # Process BUYs — three phases: risk approval, Claude review, order submission
         risk_ctx = self._risk_context.fetch(equity, buying_power, daily_pnl)
 
-        # Phase A: Collect risk-approved signals
+        # Phase A: Collect risk-approved signals.
+        # Dedup is keyed on (symbol, strategy_name) — two strategies buying
+        # the same symbol in one tick is allowed; one strategy emitting the
+        # same signal twice is not.
         approved_buys: list[tuple[Signal, int, float]] = []
+        approved_keys: set[tuple[str, str]] = set()
         for sig in buy_signals:
             if sig.symbol in self._positions:
                 logger.debug("BUY %s skipped — already held", sig.symbol)
                 continue
             if sig.symbol in pending_symbols:
                 logger.debug("BUY %s skipped — pending order exists", sig.symbol)
+                continue
+            key = (sig.symbol, sig.strategy_name)
+            if key in approved_keys:
+                logger.debug(
+                    "BUY %s/%s skipped — duplicate signal in tick",
+                    sig.symbol, sig.strategy_name,
+                )
                 continue
 
             price = prices.get(sig.symbol)
@@ -325,6 +336,7 @@ class ExecutionEngine:
                 continue
 
             approved_buys.append((sig, shares, price))
+            approved_keys.add(key)
             buying_power -= shares * price  # Reserve capital for subsequent risk evals
 
         # Phase B: Claude AI review (if enabled)

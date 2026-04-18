@@ -24,13 +24,14 @@ def _make_signal(
     direction: SignalDirection = SignalDirection.BUY,
     strength: float = 0.5,
     stop_loss_pct: float = 0.05,
+    strategy_name: str = "test",
 ) -> Signal:
     return Signal(
         symbol=symbol,
         direction=direction,
         strength=strength,
         stop_loss_pct=stop_loss_pct,
-        strategy_name="test",
+        strategy_name=strategy_name,
         reason="test signal",
         timestamp=datetime.now(UTC),
     )
@@ -205,6 +206,36 @@ class TestProcessSignals:
         engine.process_signals(signals, {"SPY": 510.0})
 
         mock_broker.submit_bracket_order.assert_not_called()
+
+    def test_same_strategy_duplicate_symbol_in_tick_submits_once(
+        self, monkeypatch
+    ) -> None:
+        engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
+        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+
+        signals = [
+            _make_signal("DIA", strength=0.8, strategy_name="sector_rotation"),
+            _make_signal("DIA", strength=0.5, strategy_name="sector_rotation"),
+        ]
+        engine.process_signals(signals, {"DIA": 100.0})
+
+        assert mock_broker.submit_bracket_order.call_count == 1
+
+    def test_different_strategies_same_symbol_both_submit(self, monkeypatch) -> None:
+        """Cross-strategy dupes are intentional — guard against re-tightening
+        this check to symbol-only dedup."""
+        engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
+        mock_broker.submit_bracket_order.side_effect = ["order-1", "order-2"]
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+
+        signals = [
+            _make_signal("DIA", strategy_name="sector_rotation"),
+            _make_signal("DIA", strategy_name="risk_off_rotation"),
+        ]
+        engine.process_signals(signals, {"DIA": 100.0})
+
+        assert mock_broker.submit_bracket_order.call_count == 2
 
     def test_buy_approved_submits_bracket(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
