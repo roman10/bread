@@ -113,6 +113,12 @@ layout = dbc.Container([
     ], className="mb-3"),
     # P&L chart
     html.Div(id="pnl-chart"),
+    html.Small(
+        "Mark-to-market = account equity open→close per bucket (includes "
+        "unrealized). The Realized P&L KPI above counts only closed trades; "
+        "the two numbers will differ whenever positions are open.",
+        className="d-block mt-1 opacity-75",
+    ),
     # Journal table
     html.H6("Trade Journal", className="mb-2 mt-3"),
     html.Div(id="journal-table"),
@@ -156,7 +162,8 @@ def update_journal(
     total_pnl = summary["total_pnl"]
     cards = [
         make_kpi_card(
-            "Total P&L", format_currency(total_pnl, show_sign=True),
+            "Realized P&L", format_currency(total_pnl, show_sign=True),
+            subtitle="closed trades only",
             color=pnl_color(total_pnl),
         ),
         make_kpi_card(

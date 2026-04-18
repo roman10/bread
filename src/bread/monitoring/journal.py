@@ -72,7 +72,10 @@ def get_journal(
         elif row.side == "SELL":
             sells.setdefault(row.symbol, []).append(row)
 
-    # Pair: for each sell, match the earliest unmatched buy (FIFO)
+    # Pair: for each sell, match the earliest unmatched buy (FIFO).
+    # If the candidate BUY is timestamped AFTER the SELL, the SELL is orphan
+    # (its opening BUY predates our history); skip the SELL but leave buy_idx
+    # alone — that BUY belongs to a later SELL.
     entries: list[JournalEntry] = []
     for sym, sell_list in sells.items():
         buy_list = buys.get(sym, [])
@@ -83,18 +86,17 @@ def get_journal(
                 continue
 
             buy_order = buy_list[buy_idx]
-            buy_idx += 1
 
-            # Skip if buy happened after sell (shouldn't happen with asc sort, but guard)
             if (
                 buy_order.filled_at_utc is not None
                 and sell_order.filled_at_utc is not None
                 and buy_order.filled_at_utc > sell_order.filled_at_utc
             ):
-                logger.debug("BUY after SELL for %s — skipping pair", sym)
+                logger.debug("Orphan SELL for %s — BUY missing from history", sym)
                 continue
 
-            # Skip if either fill price is missing
+            buy_idx += 1
+
             if buy_order.filled_price is None or sell_order.filled_price is None:
                 logger.debug("Missing fill price for %s — skipping pair", sym)
                 continue

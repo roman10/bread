@@ -67,15 +67,16 @@ def make_drawdown_figure(series: list[tuple]) -> go.Figure:
 
 
 def make_pnl_figure(period_data: list[tuple[str, float, float]]) -> go.Figure:
-    """P&L bar chart with green/red coloring by period."""
+    """Mark-to-market P&L bar chart (account equity open→close per bucket)."""
+    title = "Mark-to-Market P&L by Period"
     if not period_data:
-        return _no_data_figure("P&L by Period")
+        return _no_data_figure(title)
 
     labels = [d[0] for d in period_data]
     pnls = [d[1] for d in period_data]
     colors = ["#00bc8c" if v >= 0 else "#e74c3c" for v in pnls]
 
     fig = go.Figure(go.Bar(x=labels, y=pnls, marker_color=colors))
-    fig.update_layout(**_CHART_LAYOUT, title="P&L by Period")
+    fig.update_layout(**_CHART_LAYOUT, title=title)
     fig.update_yaxes(tickprefix="$")
     return fig

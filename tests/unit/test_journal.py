@@ -257,6 +257,25 @@ class TestGetJournal:
         assert entries[1].pnl == 200.0
         assert entries[1].strategy_name == "ema_crossover"
 
+    def test_orphan_leading_sell_does_not_consume_next_buy(self) -> None:
+        """A leading orphan SELL must not consume the next BUY — that BUY
+        pairs with a later SELL. S,B,S,B,S,B,S → 3 pairs, not 0."""
+        sf = _make_sf()
+        base = datetime(2026, 4, 13, 13, 45, tzinfo=UTC)
+        _fill(sf, "DIA", "SELL", 10, 400.0, base)  # orphan
+        _fill(sf, "DIA", "BUY", 10, 400.0, base + timedelta(minutes=15))
+        _fill(sf, "DIA", "SELL", 10, 402.0, base + timedelta(minutes=30))
+        _fill(sf, "DIA", "BUY", 10, 402.0, base + timedelta(minutes=45))
+        _fill(sf, "DIA", "SELL", 10, 405.0, base + timedelta(minutes=60))
+        _fill(sf, "DIA", "BUY", 10, 405.0, base + timedelta(minutes=75))
+        _fill(sf, "DIA", "SELL", 10, 410.0, base + timedelta(minutes=90))
+
+        with sf() as session:
+            entries = get_journal(session)
+
+        assert len(entries) == 3
+        assert sorted(e.pnl for e in entries) == [20.0, 30.0, 50.0]
+
 
 class TestGetJournalSummary:
     def test_empty_entries(self) -> None:

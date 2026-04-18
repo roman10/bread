@@ -691,7 +691,12 @@ def update_bot_activity(_n: int) -> dbc.Row:
         make_kpi_card("Last Tick", last_tick_str, color="light"),
         make_kpi_card("Ticks Today", str(activity["ticks_today"]), color="info"),
         make_kpi_card("Signals Today", str(activity["signals_today"]), color="info"),
-        make_kpi_card("Trades Today", str(activity["trades_today"]), color="info"),
+        make_kpi_card(
+            "Orders Today",
+            str(activity["trades_today"]),
+            subtitle="buy + sell, non-rejected",
+            color="info",
+        ),
     ]
     return make_kpi_row(cards)
 

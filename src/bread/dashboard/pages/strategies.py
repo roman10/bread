@@ -165,10 +165,13 @@ def update_leaderboard(days: int, _n: int) -> tuple:
 
     cards = [
         make_kpi_card(
-            "Active Strategies", str(active_count), color="info",
+            "Strategies w/ Trades",
+            str(active_count),
+            subtitle="round-trips in window",
+            color="info",
         ),
         make_kpi_card(
-            "Total P&L", format_currency(total_pnl, show_sign=True),
+            "Realized P&L", format_currency(total_pnl, show_sign=True),
             color=pnl_color(total_pnl),
         ),
         make_kpi_card(

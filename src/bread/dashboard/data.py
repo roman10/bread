@@ -191,9 +191,10 @@ class DashboardData:
         end: date | None = None,
         strategy: str | None = None,
         symbol: str | None = None,
-        limit: int = 200,
+        limit: int = 10_000,
     ) -> list[JournalEntry]:
-        """Return completed trades."""
+        """Return completed trades. Default limit matches Strategies leaderboard
+        so Trades-page summaries don't silently truncate at 200."""
         with self._sf() as session:
             return get_journal(
                 session,
