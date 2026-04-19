@@ -129,6 +129,67 @@ class TestConfigLoading:
             load_config(config_dir)
 
 
+class TestDatabasePath:
+    def test_mode_substitution(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk")
+        monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "sk")
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        monkeypatch.delenv("BREAD_DB_PATH", raising=False)
+        (config_dir / "default.yaml").write_text(
+            dedent("""\
+                mode: paper
+                db:
+                  path: "data/bread-{mode}.db"
+                data:
+                  lookback_days: 200
+            """)
+        )
+        cfg = load_config(config_dir)
+        assert cfg.db.path == "data/bread-paper.db"
+
+    def test_mode_substitution_live(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BREAD_MODE", "live")
+        monkeypatch.setenv("ALPACA_LIVE_API_KEY", "lk")
+        monkeypatch.setenv("ALPACA_LIVE_SECRET_KEY", "ls")
+        monkeypatch.delenv("BREAD_DB_PATH", raising=False)
+        (config_dir / "default.yaml").write_text(
+            dedent("""\
+                mode: paper
+                db:
+                  path: "data/bread-{mode}.db"
+                data:
+                  lookback_days: 200
+            """)
+        )
+        cfg = load_config(config_dir)
+        assert cfg.db.path == "data/bread-live.db"
+
+    def test_env_override_wins(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk")
+        monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "sk")
+        monkeypatch.setenv("BREAD_DB_PATH", "/tmp/custom.db")
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        cfg = load_config(config_dir)
+        assert cfg.db.path == "/tmp/custom.db"
+
+    def test_literal_path_no_substitution(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Paths without {mode} pass through unchanged (back-compat)."""
+        monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk")
+        monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "sk")
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        monkeypatch.delenv("BREAD_DB_PATH", raising=False)
+        cfg = load_config(config_dir)
+        assert cfg.db.path == "data/bread.db"
+
+
 class TestPaperCostSettings:
     def test_paper_cost_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk")

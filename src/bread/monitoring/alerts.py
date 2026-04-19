@@ -17,12 +17,13 @@ logger = logging.getLogger(__name__)
 class AlertManager:
     """Sends notifications via apprise with per-type rate limiting."""
 
-    def __init__(self, config: AlertSettings) -> None:
+    def __init__(self, config: AlertSettings, title_prefix: str = "") -> None:
         self._config = config
         self._apprise = apprise.Apprise()
         for url in config.urls:
             self._apprise.add(url)
         self._last_sent: dict[str, datetime] = {}
+        self._title_prefix = title_prefix
 
     def notify_trade(
         self, symbol: str, side: str, qty: int, price: float, reason: str,
@@ -98,10 +99,11 @@ class AlertManager:
             logger.debug("Rate-limited alert type=%s", alert_type)
             return
 
+        full_title = f"{self._title_prefix} {title}" if self._title_prefix else title
         try:
-            self._apprise.notify(title=title, body=body, notify_type=notify_type)
+            self._apprise.notify(title=full_title, body=body, notify_type=notify_type)
             self._last_sent[alert_type] = datetime.now(UTC)
-            logger.info("Alert sent: type=%s title=%s", alert_type, title)
+            logger.info("Alert sent: type=%s title=%s", alert_type, full_title)
         except Exception:
             logger.exception("Failed to send alert type=%s", alert_type)
 

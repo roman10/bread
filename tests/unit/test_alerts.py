@@ -134,3 +134,23 @@ class TestAlertManager:
 
         # Both should go through — different types
         assert mock_inst.notify.call_count == 2
+
+    @patch("bread.monitoring.alerts.apprise.Apprise")
+    def test_title_prefix_applied(self, mock_apprise_cls: MagicMock) -> None:
+        mock_inst = mock_apprise_cls.return_value
+        mgr = AlertManager(_config(), title_prefix='[paper "Main" (PA123)]')
+
+        mgr.notify_trade("SPY", "BUY", 10, 500.0, "test")
+
+        title = mock_inst.notify.call_args.kwargs["title"]
+        assert title == '[paper "Main" (PA123)] Trade: BUY SPY'
+
+    @patch("bread.monitoring.alerts.apprise.Apprise")
+    def test_no_prefix_default(self, mock_apprise_cls: MagicMock) -> None:
+        mock_inst = mock_apprise_cls.return_value
+        mgr = AlertManager(_config())
+
+        mgr.notify_trade("SPY", "BUY", 10, 500.0, "test")
+
+        title = mock_inst.notify.call_args.kwargs["title"]
+        assert title == "Trade: BUY SPY"

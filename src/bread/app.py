@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -13,12 +14,13 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from bread.core.config import CONFIG_DIR, AppConfig, format_account_label, load_config
+from bread.core.lock import DatabaseLock
 from bread.core.logging import setup_logging
 from bread.core.models import Position, Signal, SignalDirection
 from bread.data.alpaca_data import AlpacaDataProvider
 from bread.data.cache import BarCache
 from bread.data.indicators import compute_indicators
-from bread.db.database import get_engine, get_session_factory, init_db
+from bread.db.database import get_engine, get_session_factory, init_db, resolve_db_path
 from bread.db.models import SignalLog
 from bread.execution.alpaca_broker import AlpacaBroker
 from bread.execution.engine import ExecutionEngine
@@ -53,6 +55,7 @@ class TradingApp:
         self._strategies: list[Strategy] = []
         self._alert_manager: AlertManager | None = None
         self._scheduler: BlockingScheduler | None = None
+        self._db_lock: DatabaseLock | None = None
 
     # ------------------------------------------------------------------
     # Initialization
@@ -62,7 +65,13 @@ class TradingApp:
         """Instantiate all components from config. Called once by start()."""
         cfg = self._config
 
-        # 1. Database
+        # 1. Database — acquire an exclusive lock first so two `bread run`
+        # processes cannot share the same DB file (which would cause duplicate
+        # orders to be submitted to Alpaca on every tick).
+        resolved_db = resolve_db_path(cfg.db.path)
+        _warn_if_legacy_db(resolved_db)
+        self._db_lock = DatabaseLock(resolved_db)
+        self._db_lock.acquire()
         db_engine = get_engine(cfg.db.path)
         init_db(db_engine)
         self._db_engine = db_engine
@@ -81,6 +90,7 @@ class TradingApp:
             cfg.mode,
             f" {label}" if label else "",
         )
+        alert_prefix = f"[{cfg.mode} {label}]" if label else f"[{cfg.mode}]"
 
         # 3. Risk manager
         risk = RiskManager(cfg.risk)
@@ -145,8 +155,9 @@ class TradingApp:
 
         _merge_provider_asset_classes(cfg, universe_registry)
 
-        # 7. Alert manager
-        self._alert_manager = AlertManager(cfg.alerts)
+        # 7. Alert manager — title prefix makes paper vs live obvious in
+        # Discord/email when both processes alert into the same channel.
+        self._alert_manager = AlertManager(cfg.alerts, title_prefix=alert_prefix)
 
     def _configure_scheduler(self) -> None:
         """Register APScheduler jobs and event listeners."""
@@ -464,11 +475,33 @@ class TradingApp:
         finally:
             if self._db_engine is not None:
                 self._db_engine.dispose()
+            if self._db_lock is not None:
+                self._db_lock.release()
 
 
 # ------------------------------------------------------------------
 # Module-level helpers
 # ------------------------------------------------------------------
+
+
+_LEGACY_DB_WARNED = False
+
+
+def _warn_if_legacy_db(active_db: Path) -> None:
+    """One-time warning if the pre-multi-mode `data/bread.db` still exists."""
+    global _LEGACY_DB_WARNED
+    if _LEGACY_DB_WARNED:
+        return
+    legacy = active_db.parent / "bread.db"
+    if legacy.exists() and legacy.resolve() != active_db.resolve():
+        logger.warning(
+            "Legacy database file detected at %s. Bread now stores per-mode"
+            " databases (e.g. %s). Either rename the legacy file to the"
+            " mode-specific name or set BREAD_DB_PATH to point at it.",
+            legacy,
+            active_db.name,
+        )
+        _LEGACY_DB_WARNED = True
 
 
 def _merge_provider_asset_classes(config: AppConfig, registry: object) -> None:

@@ -217,6 +217,60 @@ source .venv/bin/activate
 python -m bread dashboard
 ```
 
+## Running Paper and Live Concurrently
+
+Bread is designed to run **one paper instance and one live instance at the same time** under the same Alpaca user (which provides one paper key set + one live key set). Each `bread run` process is fully isolated:
+
+- **Per-mode SQLite database** — `data/bread-paper.db` and `data/bread-live.db` are created automatically from the `data/bread-{mode}.db` template in `config/default.yaml`. Set `BREAD_DB_PATH` to override for one-off runs.
+- **Per-mode advisory lock** — a sidecar `<db>.lock` file prevents two processes from sharing the same DB (which would cause duplicate orders submitted to Alpaca). Different modes have different lock files and coexist freely.
+- **Per-mode credentials** — `ALPACA_PAPER_*` and `ALPACA_LIVE_*` keys live independently in `.env`. Optional `ALPACA_PAPER_NICKNAME` / `ALPACA_LIVE_NICKNAME` label each account in CLI output, dashboard navbar, and alert titles so you always know which account is acting.
+
+### Two-terminal setup
+
+```bash
+# Terminal 1
+source .venv/bin/activate
+python -m bread run --mode paper
+
+# Terminal 2
+source .venv/bin/activate
+python -m bread run --mode live
+
+# Terminal 3 — paper dashboard
+python -m bread dashboard --mode paper --port 8050
+
+# Terminal 4 — live dashboard
+python -m bread dashboard --mode live --port 8051
+```
+
+### systemd unit example
+
+`/etc/systemd/system/bread-paper.service`:
+
+```ini
+[Unit]
+Description=Bread paper trading
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/bread
+EnvironmentFile=/opt/bread/.env
+Environment=BREAD_MODE=paper
+ExecStart=/opt/bread/.venv/bin/bread run --mode paper
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Duplicate the unit as `bread-live.service` with `BREAD_MODE=live` and `--mode live`. Enable both with `systemctl enable --now bread-paper bread-live`.
+
+### Migrating from the legacy `data/bread.db`
+
+If you have an existing `data/bread.db` from before per-mode isolation, Bread logs a one-time warning at startup. Either rename the file to match the active mode (`mv data/bread.db data/bread-paper.db`) or set `BREAD_DB_PATH=data/bread.db` to keep using it.
+
 #### Auto-Refresh
 
 The dashboard refreshes automatically:

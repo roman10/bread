@@ -37,7 +37,7 @@ class AppSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    path: str = "data/bread.db"
+    path: str = "data/bread-{mode}.db"
 
 
 class DataSettings(BaseModel):
@@ -296,6 +296,17 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
     # Step 4: load .env (from the project root, one level above config dir)
     env_path = config_dir.parent / ".env"
     load_dotenv(env_path)
+
+    # Step 4b: resolve DB path. Templates may contain `{mode}` so paper and
+    # live processes get isolated SQLite files by default. BREAD_DB_PATH is
+    # an explicit override (e.g. for tests or one-off runs).
+    db_section = merged.setdefault("db", {})
+    db_override = os.environ.get("BREAD_DB_PATH")
+    if db_override:
+        db_section["path"] = db_override
+    else:
+        templated = db_section.get("path", "data/bread-{mode}.db")
+        db_section["path"] = templated.format(mode=mode)
 
     # Step 5: inject secrets from environment
     alpaca = merged.setdefault("alpaca", {})

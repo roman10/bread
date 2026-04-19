@@ -155,10 +155,22 @@ def status_cmd() -> None:
 
 @app.command("dashboard")
 def dashboard_cmd(
+    mode: str = typer.Option(
+        "paper",
+        "--mode",
+        help="Trading mode whose database to read: paper or live",
+    ),
     port: int = typer.Option(8050, "--port", help="Dashboard port"),
     debug: bool = typer.Option(False, "--debug", help="Enable Dash debug mode"),
 ) -> None:
     """Launch the monitoring dashboard."""
+    if mode not in ("paper", "live"):
+        typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
+        raise SystemExit(1)
+    import os
+
+    os.environ["BREAD_MODE"] = mode
+
     try:
         from bread.dashboard.app import create_app
     except ImportError:
@@ -172,7 +184,7 @@ def dashboard_cmd(
         config = load_config()
         setup_logging(config.app.log_level)
         dash_app = create_app(config)
-        typer.echo(f"Starting dashboard at http://localhost:{port}")
+        typer.echo(f"Starting {mode} dashboard at http://localhost:{port}")
         dash_app.run(host="127.0.0.1", port=port, debug=debug)
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)

@@ -31,7 +31,7 @@ app:
   timezone: "America/New_York"
 
 db:
-  path: "data/bread.db"
+  path: "data/bread-{mode}.db"
 
 data:
   default_timeframe: "1Day"
