@@ -1,4 +1,4 @@
-"""Trade journal — query layer on OrderLog for completed round-trips."""
+"""Trade journal — query layer on OrderLog for round-trips and open positions."""
 
 from __future__ import annotations
 
@@ -33,53 +33,47 @@ class JournalEntry:
     exit_reason: str
 
 
-def get_journal(
-    session: Session,
-    *,
-    start: date | None = None,
-    end: date | None = None,
-    strategy: str | None = None,
-    symbol: str | None = None,
-    limit: int = 10_000,
-) -> list[JournalEntry]:
-    """Query completed round-trip trades from OrderLog.
+@dataclass(frozen=True)
+class OpenPosition:
+    """One unmatched BUY — a currently-open leg owned by a specific strategy."""
 
-    Pairs BUY fills with subsequent SELL fills by symbol (FIFO). Attribution
-    (JournalEntry.strategy_name) comes from the BUY row — the strategy that
-    selected the trade. Returns entries sorted by exit_date descending.
+    symbol: str
+    strategy_name: str
+    qty: int
+    entry_price: float
+    current_price: float
+    unrealized_pnl: float
 
-    Default limit is deliberately high so summary stats computed on the
-    returned list aren't silently distorted by truncation.
+
+def _pair_orders(
+    rows: list[OrderLog],
+) -> tuple[list[JournalEntry], dict[str, list[OrderLog]]]:
+    """FIFO-pair BUYs with SELLs by symbol.
+
+    The engine enforces one open position per symbol across strategies (BUY
+    rejected if symbol already held; SELL only emitted on existing position),
+    so the interleaved sequence per symbol is B1,S1,B2,S2,... — FIFO on symbol
+    alone cannot cross unrelated lots. Pair strategy attribution comes from
+    the BUY row (the strategy that selected the trade).
+
+    Returns (journal_entries, unmatched_buys_by_symbol). The unmatched tail
+    represents currently-open positions.
     """
-    query = (
-        select(OrderLog)
-        .where(OrderLog.status == "FILLED")
-        .order_by(OrderLog.filled_at_utc.asc())
-    )
-
-    rows = session.execute(query).scalars().all()
-
-    # Separate buys and sells by symbol only. The engine enforces one open
-    # position per symbol (engine rejects BUY if symbol already held; SELL is
-    # only emitted when a position exists), so the interleaved sequence for
-    # any symbol is B1,S1,B2,S2,... — FIFO on symbol alone cannot cross
-    # unrelated lots. The pair's strategy_name is taken from the BUY row
-    # (the strategy that selected the trade); exit attribution remains
-    # queryable via the raw SELL row's strategy_name.
     buys: dict[str, list[OrderLog]] = {}
     sells: dict[str, list[OrderLog]] = {}
-
     for row in rows:
         if row.side == "BUY":
             buys.setdefault(row.symbol, []).append(row)
         elif row.side == "SELL":
             sells.setdefault(row.symbol, []).append(row)
 
-    # Pair: for each sell, match the earliest unmatched buy (FIFO).
-    # If the candidate BUY is timestamped AFTER the SELL, the SELL is orphan
-    # (its opening BUY predates our history); skip the SELL but leave buy_idx
-    # alone — that BUY belongs to a later SELL.
     entries: list[JournalEntry] = []
+    consumed: dict[str, int] = {}
+
+    # For each sell, match the earliest unmatched buy (FIFO). If the candidate
+    # BUY is timestamped AFTER the SELL, the SELL is orphan (its opening BUY
+    # predates our history); skip the SELL but leave buy_idx alone — that BUY
+    # belongs to a later SELL.
     for sym, sell_list in sells.items():
         buy_list = buys.get(sym, [])
         buy_idx = 0
@@ -117,7 +111,7 @@ def get_journal(
             exit_dt = (sell_order.filled_at_utc or sell_order.created_at_utc).date()
             hold_days = (exit_dt - entry_dt).days
 
-            entry = JournalEntry(
+            entries.append(JournalEntry(
                 symbol=sym,
                 strategy_name=buy_order.strategy_name,
                 entry_date=entry_dt,
@@ -130,10 +124,43 @@ def get_journal(
                 hold_days=hold_days,
                 entry_reason=buy_order.reason,
                 exit_reason=sell_order.reason,
-            )
-            entries.append(entry)
+            ))
+        consumed[sym] = buy_idx
 
-    # Apply filters
+    unmatched: dict[str, list[OrderLog]] = {}
+    for sym, buy_list in buys.items():
+        c = consumed.get(sym, 0)
+        if c < len(buy_list):
+            unmatched[sym] = buy_list[c:]
+
+    return entries, unmatched
+
+
+def _fetch_filled_rows(session: Session) -> list[OrderLog]:
+    query = (
+        select(OrderLog)
+        .where(OrderLog.status == "FILLED")
+        .order_by(OrderLog.filled_at_utc.asc())
+    )
+    return list(session.execute(query).scalars().all())
+
+
+def get_journal(
+    session: Session,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    strategy: str | None = None,
+    symbol: str | None = None,
+    limit: int = 10_000,
+) -> list[JournalEntry]:
+    """Query completed round-trip trades from OrderLog.
+
+    Default limit is deliberately high so summary stats computed on the
+    returned list aren't silently distorted by truncation.
+    """
+    entries, _ = _pair_orders(_fetch_filled_rows(session))
+
     if start is not None:
         entries = [e for e in entries if e.exit_date >= start]
     if end is not None:
@@ -143,10 +170,47 @@ def get_journal(
     if symbol is not None:
         entries = [e for e in entries if e.symbol == symbol]
 
-    # Sort by exit_date descending
     entries.sort(key=lambda e: e.exit_date, reverse=True)
-
     return entries[:limit]
+
+
+def _build_open_positions(
+    unmatched: dict[str, list[OrderLog]],
+    prices: dict[str, float],
+) -> list[OpenPosition]:
+    """Turn unmatched BUYs into OpenPositions using injected current prices.
+
+    Symbols without a price entry are skipped (reconcile gap or broker
+    unavailable). One entry per unmatched BUY row — consumers aggregate.
+    """
+    out: list[OpenPosition] = []
+    for sym, buy_list in unmatched.items():
+        price = prices.get(sym)
+        if price is None:
+            logger.debug("No current price for %s — skipping unrealized calc", sym)
+            continue
+        for b in buy_list:
+            if b.filled_price is None:
+                continue
+            entry_price = float(b.filled_price)
+            out.append(OpenPosition(
+                symbol=sym,
+                strategy_name=b.strategy_name,
+                qty=b.qty,
+                entry_price=entry_price,
+                current_price=price,
+                unrealized_pnl=round((price - entry_price) * b.qty, 2),
+            ))
+    return out
+
+
+def get_open_positions(
+    session: Session,
+    current_prices: dict[str, float],
+) -> list[OpenPosition]:
+    """Return one OpenPosition per unmatched BUY."""
+    _, unmatched = _pair_orders(_fetch_filled_rows(session))
+    return _build_open_positions(unmatched, current_prices)
 
 
 def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
@@ -187,12 +251,15 @@ def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
 
 @dataclass(frozen=True)
 class StrategyPnLSummary:
-    """Per-strategy realized P&L breakdown — surfaced on the dashboard."""
+    """Per-strategy P&L breakdown — surfaced on the dashboard leaderboard."""
 
     strategy_name: str
     total_trades: int
     win_rate_pct: float
-    total_pnl: float
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float  # realized + unrealized
+    open_positions: int  # distinct open symbols for this strategy
     expectancy: float
     profit_factor: float  # sum(wins) / |sum(losses)|; inf if zero losses
     best_trade: float
@@ -204,16 +271,31 @@ def get_all_strategies_summary(
     session: Session,
     *,
     days: int = 365,
+    current_prices: dict[str, float] | None = None,
 ) -> list[StrategyPnLSummary]:
     """Group completed trades by strategy and compute per-strategy summary stats.
 
-    Reuses get_journal() and get_journal_summary() so the FIFO pair-matching
-    logic stays single-source-of-truth. Returns an entry only for strategies
-    that have at least one completed round-trip in the window. Sorted by
-    total_pnl descending so the best earner appears first.
+    Realized path: completed round-trips whose exit_date falls in the lookback
+    window. Unrealized path: sum of OpenPosition.unrealized_pnl per strategy
+    across the full history (a position opened before the window but still
+    open today still has P&L-on-the-books). Gating unchanged — only strategies
+    with at least one completed round-trip in the window appear.
+
+    Sorted by total_pnl (realized + unrealized) descending.
     """
+    rows = _fetch_filled_rows(session)
+    entries, unmatched = _pair_orders(rows)
+
     start = date.today() - timedelta(days=days)
-    entries = get_journal(session, start=start)
+    entries = [e for e in entries if e.exit_date >= start]
+
+    opens = _build_open_positions(unmatched, current_prices or {})
+    unreal_by_strat: dict[str, float] = {}
+    open_symbols_by_strat: dict[str, set[str]] = {}
+    for p in opens:
+        unreal_by_strat.setdefault(p.strategy_name, 0.0)
+        unreal_by_strat[p.strategy_name] += p.unrealized_pnl
+        open_symbols_by_strat.setdefault(p.strategy_name, set()).add(p.symbol)
 
     by_strategy: dict[str, list[JournalEntry]] = {}
     for e in entries:
@@ -236,12 +318,19 @@ def get_all_strategies_summary(
 
         avg_hold = sum(e.hold_days for e in group) / len(group)
 
+        realized = float(base["total_pnl"])
+        unrealized = round(unreal_by_strat.get(strategy_name, 0.0), 2)
+        open_count = len(open_symbols_by_strat.get(strategy_name, set()))
+
         summaries.append(
             StrategyPnLSummary(
                 strategy_name=strategy_name,
                 total_trades=int(base["total_trades"]),
                 win_rate_pct=float(base["win_rate_pct"]),
-                total_pnl=float(base["total_pnl"]),
+                realized_pnl=realized,
+                unrealized_pnl=unrealized,
+                total_pnl=round(realized + unrealized, 2),
+                open_positions=open_count,
                 expectancy=float(base["expectancy"]),
                 profit_factor=profit_factor,
                 best_trade=float(base["best_trade"]),

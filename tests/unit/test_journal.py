@@ -13,6 +13,7 @@ from bread.monitoring.journal import (
     get_all_strategies_summary,
     get_journal,
     get_journal_summary,
+    get_open_positions,
 )
 
 
@@ -449,3 +450,125 @@ class TestGetAllStrategiesSummary:
         # Only the recent strat_b trade should be included
         assert len(summaries) == 1
         assert summaries[0].strategy_name == "strat_b"
+
+
+class TestGetOpenPositions:
+    def test_attribution_per_unmatched_buy(self) -> None:
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="strat_a")
+        _fill(sf, "QQQ", "BUY", 5, 400.0, t2, strategy="strat_b")
+
+        with sf() as session:
+            opens = get_open_positions(
+                session, {"SPY": 520.0, "QQQ": 395.0},
+            )
+
+        by_sym = {p.symbol: p for p in opens}
+        assert set(by_sym) == {"SPY", "QQQ"}
+
+        spy = by_sym["SPY"]
+        assert spy.strategy_name == "strat_a"
+        assert spy.qty == 10
+        assert spy.entry_price == 500.0
+        assert spy.current_price == 520.0
+        assert spy.unrealized_pnl == 200.0  # (520 - 500) * 10
+
+        qqq = by_sym["QQQ"]
+        assert qqq.strategy_name == "strat_b"
+        assert qqq.unrealized_pnl == -25.0  # (395 - 400) * 5
+
+    def test_skips_symbol_without_current_price(self) -> None:
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1)
+
+        with sf() as session:
+            opens = get_open_positions(session, {})
+
+        assert opens == []
+
+    def test_closed_trade_excluded(self) -> None:
+        """Buys that have been matched by a subsequent SELL are not open."""
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1)
+        _fill(sf, "SPY", "SELL", 10, 510.0, t2)
+
+        with sf() as session:
+            opens = get_open_positions(session, {"SPY": 515.0})
+
+        assert opens == []
+
+
+class TestStrategySummaryWithUnrealized:
+    def test_combines_realized_and_unrealized(self) -> None:
+        """Strategy with one round-trip (+50) and one open position
+        (+100 unrealized) reports total_pnl=150 and open_positions=1."""
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        t3 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
+        # Closed round-trip on SPY: +50
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="strat_x")
+        _fill(sf, "SPY", "SELL", 10, 505.0, t2, strategy="strat_x")
+        # Open position on QQQ: unrealized +100 at current_price=420
+        _fill(sf, "QQQ", "BUY", 10, 410.0, t3, strategy="strat_x")
+
+        with sf() as session:
+            summaries = get_all_strategies_summary(
+                session, days=365, current_prices={"QQQ": 420.0},
+            )
+
+        assert len(summaries) == 1
+        s = summaries[0]
+        assert s.strategy_name == "strat_x"
+        assert s.realized_pnl == 50.0
+        assert s.unrealized_pnl == 100.0
+        assert s.total_pnl == 150.0
+        assert s.open_positions == 1
+        assert s.total_trades == 1
+
+    def test_unrealized_zero_when_no_prices(self) -> None:
+        """Without current_prices, unrealized is always 0 — preserves
+        backwards-compat for CLI callers that don't have a broker."""
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
+        t3 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
+        _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="strat_x")
+        _fill(sf, "SPY", "SELL", 10, 505.0, t2, strategy="strat_x")
+        _fill(sf, "QQQ", "BUY", 10, 410.0, t3, strategy="strat_x")
+
+        with sf() as session:
+            summaries = get_all_strategies_summary(session, days=365)
+
+        assert summaries[0].realized_pnl == 50.0
+        assert summaries[0].unrealized_pnl == 0.0
+        assert summaries[0].total_pnl == 50.0
+        assert summaries[0].open_positions == 0
+
+    def test_unrealized_spans_full_history_ignoring_window(self) -> None:
+        """An open position opened before the lookback window still counts
+        toward unrealized — position P&L doesn't care about windowing."""
+        sf = _make_sf()
+        t_old_buy = datetime.now(UTC) - timedelta(days=400)
+        t_recent_buy = datetime.now(UTC) - timedelta(days=5)
+        t_recent_sell = datetime.now(UTC) - timedelta(days=2)
+        # Recent closed round-trip to satisfy the "≥1 completed trade" gate.
+        _fill(sf, "SPY", "BUY", 10, 500.0, t_recent_buy, strategy="strat_x")
+        _fill(sf, "SPY", "SELL", 10, 505.0, t_recent_sell, strategy="strat_x")
+        # Open position from 400 days ago (before lookback window).
+        _fill(sf, "QQQ", "BUY", 10, 400.0, t_old_buy, strategy="strat_x")
+
+        with sf() as session:
+            summaries = get_all_strategies_summary(
+                session, days=30, current_prices={"QQQ": 450.0},
+            )
+
+        assert len(summaries) == 1
+        s = summaries[0]
+        assert s.unrealized_pnl == 500.0  # (450 - 400) * 10
+        assert s.open_positions == 1

@@ -115,8 +115,9 @@ layout = dbc.Container([
     html.Div(id="pnl-chart"),
     html.Small(
         "Mark-to-market = account equity open→close per bucket (includes "
-        "unrealized). The Realized P&L KPI above counts only closed trades; "
-        "the two numbers will differ whenever positions are open.",
+        "unrealized). The Total P&L KPI above splits realized (closed trades "
+        "in the window) and unrealized (current open positions, as-of-now, "
+        "ignoring the lookback filter).",
         className="d-block mt-1 opacity-75",
     ),
     # Journal table
@@ -158,12 +159,25 @@ def update_journal(
     entries = data.get_journal(start=start, strategy=strategy, symbol=symbol_upper)
     summary = data.get_journal_summary(entries)
 
+    # Unrealized ignores the lookback — a position opened 400 days ago and
+    # still open today still has P&L-on-the-books. Symbol + strategy filters
+    # still apply so the card reconciles with what the user is looking at.
+    open_positions = data.get_open_positions(
+        strategy=strategy, symbol=symbol_upper,
+    )
+    unrealized_pnl = sum(p.unrealized_pnl for p in open_positions)
+
     # KPI cards
-    total_pnl = summary["total_pnl"]
+    realized_pnl = summary["total_pnl"]
+    total_pnl = realized_pnl + unrealized_pnl
+    pnl_subtitle = (
+        f"realized {format_currency(realized_pnl, show_sign=True)} · "
+        f"unrealized {format_currency(unrealized_pnl, show_sign=True)} (now)"
+    )
     cards = [
         make_kpi_card(
-            "Realized P&L", format_currency(total_pnl, show_sign=True),
-            subtitle="closed trades only",
+            "Total P&L", format_currency(total_pnl, show_sign=True),
+            subtitle=pnl_subtitle,
             color=pnl_color(total_pnl),
         ),
         make_kpi_card(

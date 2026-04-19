@@ -25,15 +25,18 @@ from bread.monitoring.journal import (
     get_all_strategies_summary,
     get_journal,
     get_journal_summary,
+    get_open_positions,
 )
 from bread.monitoring.tracker import get_daily_summaries, get_drawdown_series, get_period_pnl
 
 if TYPE_CHECKING:
     from bread.core.config import AppConfig
-    from bread.monitoring.journal import JournalEntry
+    from bread.monitoring.journal import JournalEntry, OpenPosition
     from bread.monitoring.tracker import DailySummary
 
 logger = logging.getLogger(__name__)
+
+_PRICE_CACHE_TTL = timedelta(seconds=15)
 
 
 class DashboardData:
@@ -57,6 +60,13 @@ class DashboardData:
             self._broker_available = True
         except Exception:
             logger.warning("Broker unavailable — live data will not be shown")
+
+        # Short-TTL price cache. Both /strategies and /trades callbacks ask for
+        # current prices on every refresh; caching dedups to one broker call
+        # per 15s, which is tight enough to stay fresh inside the 30s market-
+        # hours refresh window and slack enough to eat a multi-tab scenario.
+        self._price_cache: dict[str, float] = {}
+        self._price_cache_at: datetime | None = None
 
     @property
     def broker_available(self) -> bool:
@@ -120,6 +130,31 @@ class DashboardData:
                 "daily_pct": 0.0,
                 "drawdown_pct": 0.0,
             }
+
+    def get_current_prices(self) -> dict[str, float]:
+        """Return {symbol: current_price} from broker.get_positions, cached briefly.
+
+        Returns {} if broker is unavailable or the API call fails. Other
+        symbols (unmatched BUYs without a broker-side position) simply won't
+        appear and are treated as reconcile gaps by callers.
+        """
+        now = datetime.now(UTC)
+        if (
+            self._price_cache_at is not None
+            and now - self._price_cache_at < _PRICE_CACHE_TTL
+        ):
+            return self._price_cache
+        if self._broker is None:
+            return {}
+        try:
+            positions = self._broker.get_positions()
+            self._price_cache = {
+                p.symbol: float(p.current_price or 0) for p in positions
+            }
+            self._price_cache_at = now
+        except Exception:
+            logger.exception("Failed to fetch positions for price cache")
+        return self._price_cache
 
     def get_positions(self) -> list[dict]:
         """Return open positions as dicts (ready for AG Grid)."""
@@ -209,21 +244,27 @@ class DashboardData:
         return get_journal_summary(entries)
 
     def get_strategy_leaderboard(self, days: int = 365) -> list[dict]:
-        """Return per-strategy realized P&L rows for the AG Grid leaderboard.
+        """Return per-strategy P&L rows for the AG Grid leaderboard.
 
         Profit factor of `inf` (a strategy with zero losses) is sent as `None`
         because JSON cannot represent infinity; the column formatter renders
         it as the unicode infinity glyph.
         """
+        prices = self.get_current_prices()
         with self._sf() as session:
-            summaries = get_all_strategies_summary(session, days=days)
+            summaries = get_all_strategies_summary(
+                session, days=days, current_prices=prices,
+            )
 
         return [
             {
                 "strategy_name": s.strategy_name,
                 "total_trades": s.total_trades,
                 "win_rate_pct": s.win_rate_pct,
+                "realized_pnl": s.realized_pnl,
+                "unrealized_pnl": s.unrealized_pnl,
                 "total_pnl": s.total_pnl,
+                "open_positions": s.open_positions,
                 "expectancy": s.expectancy,
                 "profit_factor": (
                     None if math.isinf(s.profit_factor) else s.profit_factor
@@ -234,6 +275,22 @@ class DashboardData:
             }
             for s in summaries
         ]
+
+    def get_open_positions(
+        self,
+        *,
+        strategy: str | None = None,
+        symbol: str | None = None,
+    ) -> list[OpenPosition]:
+        """Return OpenPosition rows (one per unmatched BUY), optionally filtered."""
+        prices = self.get_current_prices()
+        with self._sf() as session:
+            opens = get_open_positions(session, prices)
+        if strategy is not None:
+            opens = [p for p in opens if p.strategy_name == strategy]
+        if symbol is not None:
+            opens = [p for p in opens if p.symbol == symbol]
+        return opens
 
     # ------------------------------------------------------------------
     # Bot activity & strategy status

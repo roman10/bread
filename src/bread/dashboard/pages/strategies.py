@@ -43,7 +43,31 @@ _LEADERBOARD_COLS = [
         },
     },
     {
-        "field": "total_pnl", "headerName": "P&L", "width": 120,
+        "field": "realized_pnl", "headerName": "Realized", "width": 110,
+        "type": "numericColumn",
+        "valueFormatter": {
+            "function":
+            "(params.value >= 0 ? '+$' : '-$') + Math.abs(params.value).toFixed(2)"
+        },
+        "cellStyle": {
+            "function":
+            "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
+        },
+    },
+    {
+        "field": "unrealized_pnl", "headerName": "Unrealized", "width": 120,
+        "type": "numericColumn",
+        "valueFormatter": {
+            "function":
+            "(params.value >= 0 ? '+$' : '-$') + Math.abs(params.value).toFixed(2)"
+        },
+        "cellStyle": {
+            "function":
+            "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
+        },
+    },
+    {
+        "field": "total_pnl", "headerName": "Total P&L", "width": 120,
         "type": "numericColumn", "sort": "desc", "sortIndex": 0,
         "valueFormatter": {
             "function":
@@ -53,6 +77,10 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+    },
+    {
+        "field": "open_positions", "headerName": "Open", "width": 75,
+        "type": "numericColumn",
     },
     {
         "field": "expectancy", "headerName": "Expectancy", "width": 120,
@@ -123,7 +151,9 @@ layout = dbc.Container([
     html.Div(id="strategies-leaderboard-table"),
     html.P(
         "Strategies appear once they have at least one completed round-trip "
-        "in the selected window. Ranking is by realized P&L (dollars). Use "
+        "in the selected window. Ranking is by Total P&L (realized + "
+        "unrealized as-of-now). Strategies with only open positions (no "
+        "round-trips yet) are visible on the Portfolio page. Use "
         "`bread compare` for backtest-based selection — paper sample sizes "
         "alone are too small for confident strategy choice.",
         className="small mt-3 opacity-75",
@@ -145,7 +175,9 @@ def update_leaderboard(days: int, _n: int) -> tuple:
     rows = data.get_strategy_leaderboard(days=days)
 
     # KPI cards: aggregate across all strategies in the window
-    total_pnl = sum(r["total_pnl"] for r in rows)
+    realized_pnl = sum(r["realized_pnl"] for r in rows)
+    unrealized_pnl = sum(r["unrealized_pnl"] for r in rows)
+    total_pnl = realized_pnl + unrealized_pnl
     total_trades = sum(r["total_trades"] for r in rows)
     active_count = len(rows)
     if total_trades > 0:
@@ -163,6 +195,11 @@ def update_leaderboard(days: int, _n: int) -> tuple:
     else:
         win_rate_color = "warning"
 
+    pnl_subtitle = (
+        f"realized {format_currency(realized_pnl, show_sign=True)} · "
+        f"unrealized {format_currency(unrealized_pnl, show_sign=True)} (now)"
+    )
+
     cards = [
         make_kpi_card(
             "Strategies w/ Trades",
@@ -171,7 +208,8 @@ def update_leaderboard(days: int, _n: int) -> tuple:
             color="info",
         ),
         make_kpi_card(
-            "Realized P&L", format_currency(total_pnl, show_sign=True),
+            "Total P&L", format_currency(total_pnl, show_sign=True),
+            subtitle=pnl_subtitle,
             color=pnl_color(total_pnl),
         ),
         make_kpi_card(
