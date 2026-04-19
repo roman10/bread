@@ -27,7 +27,9 @@ class TestAlpacaBroker:
     def test_get_account(self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
         config = _make_config(monkeypatch)
         mock_client = mock_client_cls.return_value
-        mock_account = SimpleNamespace(equity="10000", buying_power="8000")
+        mock_account = SimpleNamespace(
+            equity="10000", buying_power="8000", account_number="PA3MDB12XYZ"
+        )
         mock_client.get_account.return_value = mock_account
 
         broker = AlpacaBroker(config)
@@ -35,7 +37,23 @@ class TestAlpacaBroker:
 
         assert account.equity == 10000.0
         assert account.buying_power == 8000.0
+        assert account.account_number == "PA3MDB12XYZ"
         mock_client.get_account.assert_called_once()
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_get_account_missing_account_number(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        # SimpleNamespace without account_number — getattr default kicks in
+        mock_client.get_account.return_value = SimpleNamespace(
+            equity="10000", buying_power="8000"
+        )
+
+        account = AlpacaBroker(config).get_account()
+
+        assert account.account_number is None
 
     @patch("bread.execution.alpaca_broker._read_retrier.wait", new=lambda *a, **kw: 0)
     @patch("bread.execution.alpaca_broker.TradingClient")

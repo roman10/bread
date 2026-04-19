@@ -169,3 +169,16 @@ class TestAlpacaNickname:
         s = AlpacaSettings(paper_nickname="P", live_nickname="L")
         assert s.nickname_for("paper") == "P"
         assert s.nickname_for("live") == "L"
+
+    def test_nicknames_loaded_from_env(
+        self, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ALPACA_PAPER_API_KEY", "pk-test")
+        monkeypatch.setenv("ALPACA_PAPER_SECRET_KEY", "sk-test")
+        monkeypatch.setenv("ALPACA_PAPER_NICKNAME", "Main Paper")
+        monkeypatch.setenv("ALPACA_LIVE_NICKNAME", "Prod")
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+
+        cfg = load_config(config_dir)
+        assert cfg.alpaca.paper_nickname == "Main Paper"
+        assert cfg.alpaca.live_nickname == "Prod"
