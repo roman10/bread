@@ -251,9 +251,16 @@ class TradingApp:
                     self._log_signals(signals)
 
             # 5. Execute signals
-            positions_before = {p.symbol for p in self._engine.get_positions()}
+            # Keys on (symbol, strategy_name) so two strategies holding the
+            # same symbol don't mask each other's open/close events in the
+            # notifier.
+            positions_before = {
+                (p.symbol, p.strategy_name) for p in self._engine.get_positions()
+            }
             self._engine.process_signals(all_signals, prices)
-            positions_after = {p.symbol: p for p in self._engine.get_positions()}
+            positions_after = {
+                (p.symbol, p.strategy_name): p for p in self._engine.get_positions()
+            }
 
             # 6. Send trade alerts
             self._notify_trades(all_signals, positions_before, positions_after, prices)
@@ -294,27 +301,28 @@ class TradingApp:
     def _notify_trades(
         self,
         signals: list[Signal],
-        positions_before: set[str],
-        positions_after: dict[str, Position],
+        positions_before: set[tuple[str, str]],
+        positions_after: dict[tuple[str, str], Position],
         prices: dict[str, float],
     ) -> None:
-        """Send trade alerts for newly entered or closed positions."""
+        """Send trade alerts for newly entered or closed positions per strategy."""
         if not self._alert_manager or not signals:
             return
         assert self._engine is not None
         for sig in signals:
+            key = (sig.symbol, sig.strategy_name)
             is_new_buy = (
                 sig.direction == SignalDirection.BUY
-                and sig.symbol in positions_after
-                and sig.symbol not in positions_before
+                and key in positions_after
+                and key not in positions_before
             )
             is_closed_sell = (
                 sig.direction == SignalDirection.SELL
-                and sig.symbol in positions_before
-                and sig.symbol not in positions_after
+                and key in positions_before
+                and key not in positions_after
             )
             if is_new_buy:
-                pos = positions_after[sig.symbol]
+                pos = positions_after[key]
                 reason = sig.reason
                 review = self._engine.get_last_review(sig.symbol)
                 if review:

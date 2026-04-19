@@ -164,6 +164,9 @@ class TestReconcile:
         assert len(positions) == 1
         assert positions[0].symbol == "SPY"
         assert positions[0].qty == 5
+        # Broker-found positions must land in the "unknown" bucket so they
+        # stay visible without being eligible for any strategy's SELL.
+        assert positions[0].strategy_name == "unknown"
 
     def test_removes_closed_position(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
@@ -1334,7 +1337,10 @@ class TestStaleOrderTimeout:
             order = session.execute(select(OrderLog)).scalars().first()
             assert order is not None
             assert order.status == "CANCELLED"
-        mock_broker.cancel_orders_for_symbol.assert_called_once_with("SPY")
+        # Must cancel the specific order, NOT all orders for the symbol —
+        # otherwise other strategies' brackets on SPY would get nuked too.
+        mock_broker.cancel_order.assert_called_once_with("stale-1")
+        mock_broker.cancel_orders_for_symbol.assert_not_called()
 
     def test_fresh_order_not_cancelled(self, monkeypatch) -> None:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
@@ -1361,7 +1367,7 @@ class TestStaleOrderTimeout:
             order = session.execute(select(OrderLog)).scalars().first()
             assert order is not None
             assert order.status == "PENDING"
-        mock_broker.cancel_orders_for_symbol.assert_not_called()
+        mock_broker.cancel_order.assert_not_called()
 
     def test_stale_accepted_also_cancelled(self, monkeypatch) -> None:
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
@@ -1415,7 +1421,7 @@ class TestStaleOrderTimeout:
             order = session.execute(select(OrderLog)).scalars().first()
             assert order is not None
             assert order.status == "CANCELLED"
-        mock_broker.cancel_orders_for_symbol.assert_not_called()
+        mock_broker.cancel_order.assert_not_called()
 
 
 class TestStrategyIsolation:

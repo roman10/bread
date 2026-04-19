@@ -311,8 +311,11 @@ class ExecutionEngine:
                 order.symbol,
                 timeout,
             )
+            # Cancel the specific stale order only. Using
+            # cancel_orders_for_symbol here would kill every open order for
+            # the symbol, including another strategy's live bracket legs.
             if order.broker_order_id:
-                self._broker.cancel_orders_for_symbol(order.symbol)
+                self._broker.cancel_order(order.broker_order_id)
             order.status = "CANCELLED"
         if stale:
             session.commit()

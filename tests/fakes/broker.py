@@ -21,7 +21,12 @@ from datetime import UTC, datetime
 
 from bread.core.models import OrderSide, OrderStatus
 from bread.execution.broker import Broker
-from bread.execution.models import Account, BrokerOrder, BrokerPosition
+from bread.execution.models import (
+    Account,
+    BracketOrderIds,
+    BrokerOrder,
+    BrokerPosition,
+)
 
 
 def _default_account() -> Account:
@@ -45,8 +50,10 @@ class FakeBroker(Broker):
 
     # Recorded calls — tests assert on these.
     submitted_brackets: list[tuple[str, int, float, float]] = field(default_factory=list)
+    submitted_sells: list[tuple[str, int]] = field(default_factory=list)
     closed_symbols: list[str] = field(default_factory=list)
     cancelled_symbols: list[str] = field(default_factory=list)
+    cancelled_order_ids: list[str] = field(default_factory=list)
     cancel_all_calls: int = 0
     close_all_calls: int = 0
 
@@ -131,13 +138,68 @@ class FakeBroker(Broker):
         qty: int,
         stop_loss_price: float,
         take_profit_price: float,
-    ) -> str:
+    ) -> BracketOrderIds:
         order_id = f"fake-{uuid.uuid4().hex[:8]}"
+        stop_id = f"fake-stop-{uuid.uuid4().hex[:8]}"
+        tp_id = f"fake-tp-{uuid.uuid4().hex[:8]}"
         self.submitted_brackets.append((symbol, qty, stop_loss_price, take_profit_price))
+        now = datetime.now(UTC)
         self.open_orders[order_id] = BrokerOrder(
             id=order_id,
             symbol=symbol,
             side=OrderSide.BUY,
+            status=OrderStatus.PENDING,
+            qty=float(qty),
+            filled_qty=0.0,
+            filled_avg_price=None,
+            submitted_at=now,
+            created_at=now,
+            filled_at=None,
+            order_type="market",
+        )
+        # Register the OCO legs too so tests exercising _bracket_completed
+        # and per-leg cancel_order get realistic behavior. Order types match
+        # what Alpaca returns for a bracket: stop-loss is "stop", take-profit
+        # is "limit".
+        self.open_orders[stop_id] = BrokerOrder(
+            id=stop_id,
+            symbol=symbol,
+            side=OrderSide.SELL,
+            status=OrderStatus.ACCEPTED,
+            qty=float(qty),
+            filled_qty=0.0,
+            filled_avg_price=None,
+            submitted_at=now,
+            created_at=now,
+            filled_at=None,
+            order_type="stop",
+        )
+        self.open_orders[tp_id] = BrokerOrder(
+            id=tp_id,
+            symbol=symbol,
+            side=OrderSide.SELL,
+            status=OrderStatus.ACCEPTED,
+            qty=float(qty),
+            filled_qty=0.0,
+            filled_avg_price=None,
+            submitted_at=now,
+            created_at=now,
+            filled_at=None,
+            order_type="limit",
+        )
+        return BracketOrderIds(
+            parent_order_id=order_id,
+            stop_loss_order_id=stop_id,
+            take_profit_order_id=tp_id,
+        )
+
+    def submit_market_sell(self, symbol: str, qty: int) -> str:
+        order_id = f"fake-sell-{uuid.uuid4().hex[:8]}"
+        self.submitted_sells.append((symbol, qty))
+        self.open_orders[order_id] = BrokerOrder(
+            id=order_id,
+            symbol=symbol,
+            side=OrderSide.SELL,
             status=OrderStatus.PENDING,
             qty=float(qty),
             filled_qty=0.0,
@@ -148,6 +210,13 @@ class FakeBroker(Broker):
             order_type="market",
         )
         return order_id
+
+    def cancel_order(self, order_id: str) -> bool:
+        self.cancelled_order_ids.append(order_id)
+        if order_id in self.open_orders:
+            del self.open_orders[order_id]
+            return True
+        return False
 
     def cancel_orders_for_symbol(self, symbol: str) -> int:
         self.cancelled_symbols.append(symbol)
