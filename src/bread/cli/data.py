@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from bread.cli._app import app
+from bread.cli._helpers import apply_mode
 from bread.core.config import load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
@@ -15,8 +16,16 @@ from bread.db.database import get_engine, get_session_factory, init_db
 
 
 @app.command("fetch")
-def fetch(symbol: str) -> None:
+def fetch(
+    symbol: str,
+    mode: str = typer.Option(
+        None,
+        "--mode",
+        help="Trading mode: paper or live (defaults to BREAD_MODE env / config)",
+    ),
+) -> None:
     """Fetch daily bars, cache them, compute indicators, and print a summary."""
+    apply_mode(mode)
     try:
         config = load_config()
         setup_logging(config.app.log_level)

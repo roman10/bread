@@ -228,6 +228,10 @@ Bread is designed to run **one paper instance and one live instance at the same 
 ### Two-terminal setup
 
 ```bash
+# One-time: initialize each per-mode database
+python -m bread db init --mode paper
+python -m bread db init --mode live
+
 # Terminal 1
 source .venv/bin/activate
 python -m bread run --mode paper
@@ -242,6 +246,8 @@ python -m bread dashboard --mode paper --port 8050
 # Terminal 4 — live dashboard
 python -m bread dashboard --mode live --port 8051
 ```
+
+`bread status`, `bread journal`, and `bread fetch` all accept `--mode` too, so you can inspect either account without juggling environment variables.
 
 ### systemd unit example
 

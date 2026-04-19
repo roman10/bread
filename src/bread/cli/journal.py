@@ -7,6 +7,7 @@ from datetime import date, timedelta
 import typer
 
 from bread.cli._app import app
+from bread.cli._helpers import apply_mode
 from bread.core.config import load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
@@ -15,11 +16,17 @@ from bread.db.database import get_engine, get_session_factory, init_db
 
 @app.command("journal")
 def journal_cmd(
+    mode: str = typer.Option(
+        None,
+        "--mode",
+        help="Trading mode: paper or live (defaults to BREAD_MODE env / config)",
+    ),
     strategy: str = typer.Option(None, "--strategy", help="Filter by strategy name"),
     symbol: str = typer.Option(None, "--symbol", help="Filter by symbol"),
     days: int = typer.Option(30, "--days", help="Number of days to look back"),
 ) -> None:
     """Display trade journal entries."""
+    apply_mode(mode)
     try:
         config = load_config()
         setup_logging(config.app.log_level)

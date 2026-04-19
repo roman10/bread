@@ -7,7 +7,7 @@ import logging
 import typer
 
 from bread.cli._app import app
-from bread.cli._helpers import start_dashboard_thread
+from bread.cli._helpers import apply_mode, start_dashboard_thread
 from bread.core.config import format_account_label, load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
@@ -25,12 +25,7 @@ def run_cmd(
     dashboard_port: int = typer.Option(8050, "--dashboard-port", help="Dashboard port"),
 ) -> None:
     """Start the trading bot."""
-    if mode not in ("paper", "live"):
-        typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
-        raise SystemExit(1)
-    import os
-
-    os.environ["BREAD_MODE"] = mode
+    apply_mode(mode)
     if dashboard:
         start_dashboard_thread(dashboard_port)
     try:
@@ -43,8 +38,15 @@ def run_cmd(
 
 
 @app.command("status")
-def status_cmd() -> None:
+def status_cmd(
+    mode: str = typer.Option(
+        None,
+        "--mode",
+        help="Trading mode: paper or live (defaults to BREAD_MODE env / config)",
+    ),
+) -> None:
     """Show account and position status."""
+    apply_mode(mode)
     try:
         config = load_config()
         setup_logging(config.app.log_level)
@@ -164,12 +166,7 @@ def dashboard_cmd(
     debug: bool = typer.Option(False, "--debug", help="Enable Dash debug mode"),
 ) -> None:
     """Launch the monitoring dashboard."""
-    if mode not in ("paper", "live"):
-        typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
-        raise SystemExit(1)
-    import os
-
-    os.environ["BREAD_MODE"] = mode
+    apply_mode(mode)
 
     try:
         from bread.dashboard.app import create_app

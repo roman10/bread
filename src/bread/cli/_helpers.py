@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,21 @@ GATE_MIN_PROFIT_FACTOR = 1.3
 GATE_MAX_DRAWDOWN_PCT = 12.0
 GATE_MIN_WIN_RATE_PCT = 40.0
 GATE_MIN_TRADES = 30
+
+
+def apply_mode(mode: str | None) -> None:
+    """Propagate an explicit `--mode` to BREAD_MODE so load_config picks it up.
+
+    When `mode` is None (no `--mode` passed), the existing BREAD_MODE env var
+    and config default are respected — so `BREAD_MODE=live bread journal`
+    keeps working alongside the explicit `bread journal --mode live`.
+    """
+    if mode is None:
+        return
+    if mode not in ("paper", "live"):
+        typer.echo(f"Error: mode must be 'paper' or 'live', got '{mode}'", err=True)
+        raise SystemExit(1)
+    os.environ["BREAD_MODE"] = mode
 
 
 def passes_promotion_gate(metrics: dict[str, float | int]) -> bool:

@@ -137,3 +137,40 @@ class TestOnJobMissed:
         app._scheduler = MagicMock()
         app._on_job_missed(self._make_event("daily_summary"))
         app._scheduler.add_job.assert_not_called()
+
+
+class TestLegacyDbWarning:
+    def test_warns_when_legacy_alongside_per_mode(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from bread.app import _warn_if_legacy_db
+
+        (tmp_path / "bread.db").touch()
+        active = tmp_path / "bread-paper.db"
+
+        with caplog.at_level("WARNING", logger="bread.app"):
+            _warn_if_legacy_db(active)
+
+        assert any("Legacy database file detected" in r.message for r in caplog.records)
+
+    def test_silent_when_no_legacy_file(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from bread.app import _warn_if_legacy_db
+
+        active = tmp_path / "bread-paper.db"
+        with caplog.at_level("WARNING", logger="bread.app"):
+            _warn_if_legacy_db(active)
+        assert not any("Legacy database" in r.message for r in caplog.records)
+
+    def test_silent_when_active_path_is_the_legacy_file(
+        self, tmp_path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """If user explicitly points BREAD_DB_PATH at data/bread.db, don't nag."""
+        from bread.app import _warn_if_legacy_db
+
+        legacy = tmp_path / "bread.db"
+        legacy.touch()
+        with caplog.at_level("WARNING", logger="bread.app"):
+            _warn_if_legacy_db(legacy)
+        assert not any("Legacy database" in r.message for r in caplog.records)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from bread.cli._app import app, db_app
+from bread.cli._helpers import apply_mode
 from bread.core.config import load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
@@ -12,8 +13,15 @@ from bread.db.database import get_engine, init_db, resolve_db_path
 
 
 @db_app.command("init")
-def db_init() -> None:
+def db_init(
+    mode: str = typer.Option(
+        None,
+        "--mode",
+        help="Trading mode: paper or live (defaults to BREAD_MODE env / config)",
+    ),
+) -> None:
     """Create the database and all tables."""
+    apply_mode(mode)
     try:
         config = load_config()
         setup_logging(config.app.log_level)

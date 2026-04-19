@@ -750,3 +750,48 @@ class TestBackfillOrders:
         result = runner.invoke(app, ["backfill-orders", "--from", "not-a-date"])
         assert result.exit_code == 1
         assert "must be YYYY-MM-DD" in result.stderr
+
+
+class TestApplyMode:
+    def test_sets_bread_mode_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from bread.cli._helpers import apply_mode
+
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        apply_mode("live")
+        assert os.environ["BREAD_MODE"] == "live"
+
+    def test_paper_overrides_existing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from bread.cli._helpers import apply_mode
+
+        monkeypatch.setenv("BREAD_MODE", "live")
+        apply_mode("paper")
+        assert os.environ["BREAD_MODE"] == "paper"
+
+    def test_none_preserves_existing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When --mode isn't passed, existing BREAD_MODE must be respected."""
+        import os
+
+        from bread.cli._helpers import apply_mode
+
+        monkeypatch.setenv("BREAD_MODE", "live")
+        apply_mode(None)
+        assert os.environ["BREAD_MODE"] == "live"
+
+    def test_none_with_unset_env_is_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from bread.cli._helpers import apply_mode
+
+        monkeypatch.delenv("BREAD_MODE", raising=False)
+        apply_mode(None)
+        assert "BREAD_MODE" not in os.environ
+
+    def test_invalid_mode_exits(self) -> None:
+        from bread.cli._helpers import apply_mode
+
+        with pytest.raises(SystemExit):
+            apply_mode("invalid")

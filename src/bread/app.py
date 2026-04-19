@@ -484,14 +484,11 @@ class TradingApp:
 # ------------------------------------------------------------------
 
 
-_LEGACY_DB_WARNED = False
-
-
 def _warn_if_legacy_db(active_db: Path) -> None:
-    """One-time warning if the pre-multi-mode `data/bread.db` still exists."""
-    global _LEGACY_DB_WARNED
-    if _LEGACY_DB_WARNED:
-        return
+    """Warn if the pre-multi-mode `data/bread.db` still exists alongside the
+    new per-mode files. Idempotent: callers running multiple TradingApps in a
+    single process will see the warning per init, which is fine — it's a real
+    misconfiguration worth surfacing each time."""
     legacy = active_db.parent / "bread.db"
     if legacy.exists() and legacy.resolve() != active_db.resolve():
         logger.warning(
@@ -501,7 +498,6 @@ def _warn_if_legacy_db(active_db: Path) -> None:
             legacy,
             active_db.name,
         )
-        _LEGACY_DB_WARNED = True
 
 
 def _merge_provider_asset_classes(config: AppConfig, registry: object) -> None:
