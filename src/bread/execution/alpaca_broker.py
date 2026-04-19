@@ -26,7 +26,7 @@ from urllib3.exceptions import ProtocolError
 from bread.core.exceptions import ExecutionError, OrderError
 from bread.core.models import OrderSide, OrderStatus
 from bread.execution.broker import Broker
-from bread.execution.models import Account, BrokerOrder, BrokerPosition
+from bread.execution.models import Account, BracketOrderIds, BrokerOrder, BrokerPosition
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -161,6 +161,31 @@ def _to_broker_order(raw: AlpacaOrder) -> BrokerOrder:
         filled_at=getattr(raw, "filled_at", None),
         order_type=order_type,
     )
+
+
+def _extract_bracket_leg_ids(parent_order: object) -> tuple[str, str]:
+    """Return (stop_loss_id, take_profit_id) from an Alpaca bracket parent.
+
+    Alpaca populates ``.legs`` with the child OCO orders on submit. Each leg
+    carries its own ``type`` — "stop" (stop-loss) or "limit" (take-profit).
+    Returns empty strings for legs we can't resolve; callers should log and
+    continue — a missing leg ID just weakens cancellation, it doesn't break
+    the trade.
+    """
+    legs = getattr(parent_order, "legs", None) or []
+    stop_id = ""
+    tp_id = ""
+    for leg in legs:
+        leg_type_raw = getattr(leg, "type", None) or getattr(leg, "order_type", None)
+        leg_type = str(getattr(leg_type_raw, "value", leg_type_raw) or "").lower()
+        leg_id = str(getattr(leg, "id", "") or "")
+        if not leg_id:
+            continue
+        if "stop" in leg_type and not stop_id:
+            stop_id = leg_id
+        elif "limit" in leg_type and not tp_id:
+            tp_id = leg_id
+    return stop_id, tp_id
 
 
 _read_retrier = Retrying(
@@ -320,10 +345,14 @@ class AlpacaBroker(Broker):
         qty: int,
         stop_loss_price: float,
         take_profit_price: float,
-    ) -> str:
+    ) -> BracketOrderIds:
         """Submit a bracket order (market buy + OCO stop-loss/take-profit).
 
-        Returns the Alpaca parent order ID.
+        Returns the parent + leg IDs. Child legs are extracted from the
+        submitted parent's ``legs`` attribute; they're identified by order
+        type ("stop" → stop-loss, "limit" → take-profit). If either leg ID
+        can't be resolved we return it as empty and log — callers must
+        tolerate empty child IDs as best-effort cancellation targets.
         """
         if qty <= 0:
             raise OrderError(f"Invalid bracket order qty for {symbol}: {qty} (must be > 0)")
@@ -350,11 +379,72 @@ class AlpacaBroker(Broker):
                 stop_loss={"stop_price": round(stop_loss_price, 2)},
             )
             order = self._client.submit_order(request)
-            order_id = str(order.id)  # type: ignore[union-attr]
-            logger.info("Bracket order submitted: %s order_id=%s", symbol, order_id)
-            return order_id
+            parent_id = str(order.id)  # type: ignore[union-attr]
+            stop_id, tp_id = _extract_bracket_leg_ids(order)
+            if not stop_id or not tp_id:
+                logger.warning(
+                    "Bracket legs incomplete for %s parent=%s stop=%s tp=%s",
+                    symbol, parent_id, stop_id or "<missing>", tp_id or "<missing>",
+                )
+            logger.info(
+                "Bracket order submitted: %s parent=%s stop=%s tp=%s",
+                symbol, parent_id, stop_id, tp_id,
+            )
+            return BracketOrderIds(
+                parent_order_id=parent_id,
+                stop_loss_order_id=stop_id,
+                take_profit_order_id=tp_id,
+            )
         except Exception as exc:
             raise OrderError(f"Failed to submit bracket order for {symbol}: {exc}") from exc
+
+    def submit_market_sell(self, symbol: str, qty: int) -> str:
+        """Submit a market SELL for *qty* shares. Returns the order ID."""
+        if qty <= 0:
+            raise OrderError(f"Invalid sell qty for {symbol}: {qty} (must be > 0)")
+        logger.info("Submitting market sell: %s qty=%d", symbol, qty)
+        try:
+            request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=AlpacaOrderSide.SELL,
+                time_in_force=TimeInForce.DAY,
+            )
+            order = self._client.submit_order(request)
+            order_id = str(order.id)  # type: ignore[union-attr]
+            logger.info("Market sell submitted: %s order_id=%s", symbol, order_id)
+            return order_id
+        except Exception as exc:
+            raise OrderError(f"Failed to submit market sell for {symbol}: {exc}") from exc
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel one order by broker ID. Returns False if already terminal."""
+        if not order_id:
+            return False
+        try:
+            self._client.cancel_order_by_id(order_id)
+            logger.info("Cancelled order %s", order_id)
+            return True
+        except Exception as exc:
+            msg = str(exc).lower()
+            # Alpaca returns 422 for orders already in a terminal state (filled/
+            # cancelled/expired). Treat those as a no-op so the SELL path can
+            # proceed without polluting logs.
+            if any(
+                phrase in msg
+                for phrase in (
+                    "not cancelable",
+                    "is not cancelable",
+                    "unable to cancel",
+                    "already",
+                    "not found",
+                    "422",
+                )
+            ):
+                logger.debug("Order %s already terminal, skipping cancel", order_id)
+                return False
+            logger.warning("Failed to cancel order %s: %s", order_id, exc)
+            return False
 
     def cancel_orders_for_symbol(self, symbol: str) -> int:
         """Cancel all open orders for a symbol. Returns count cancelled.

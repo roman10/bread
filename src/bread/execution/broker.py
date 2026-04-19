@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from bread.execution.models import Account, BrokerOrder, BrokerPosition
+from bread.execution.models import Account, BracketOrderIds, BrokerOrder, BrokerPosition
 
 
 class Broker(ABC):
@@ -55,8 +55,25 @@ class Broker(ABC):
         qty: int,
         stop_loss_price: float,
         take_profit_price: float,
-    ) -> str:
-        """Submit a bracket order. Returns the parent order ID."""
+    ) -> BracketOrderIds:
+        """Submit a bracket order. Returns the parent + OCO leg IDs."""
+
+    @abstractmethod
+    def submit_market_sell(self, symbol: str, qty: int) -> str:
+        """Submit a plain market SELL for exactly *qty* shares. Returns order ID.
+
+        Used when the engine closes one strategy's position in a symbol
+        without liquidating another strategy's shares on the same symbol.
+        Caller is responsible for cancelling any open OCO legs first.
+        """
+
+    @abstractmethod
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a single order by broker ID. Returns True on success.
+
+        Tolerates "already cancelled"/"already filled" errors as success=False
+        without raising — this is a best-effort call on OCO cleanup paths.
+        """
 
     @abstractmethod
     def cancel_orders_for_symbol(self, symbol: str) -> int:
@@ -72,4 +89,9 @@ class Broker(ABC):
 
     @abstractmethod
     def close_position(self, symbol: str) -> str | None:
-        """Close a position by symbol. Returns order ID or None if no position."""
+        """Close a position by symbol. Returns order ID or None if no position.
+
+        Liquidates ALL broker-side shares for the symbol — do not use from the
+        per-strategy SELL path when multiple strategies may hold the symbol.
+        Reserved for reset flows, unknown-owner positions, and CLI tools.
+        """

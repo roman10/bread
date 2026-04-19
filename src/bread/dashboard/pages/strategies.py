@@ -11,6 +11,7 @@ from __future__ import annotations
 import dash
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
+import plotly.graph_objects as go
 from dash import Input, Output, callback, dcc, html
 from flask import current_app
 
@@ -162,6 +163,8 @@ layout = dbc.Container([
     ], className="mb-3"),
     html.H6("Strategy Leaderboard", className="mb-2 mt-3"),
     html.Div(id="strategies-leaderboard-table"),
+    html.H6("Per-Strategy Equity Curves", className="mb-2 mt-4"),
+    dcc.Graph(id="strategies-equity-chart", config={"displayModeBar": False}),
     html.P(
         "Strategies appear once they have at least one completed round-trip "
         "in the selected window. Ranking is by Total P&L (realized + "
@@ -175,6 +178,41 @@ layout = dbc.Container([
 
 
 # -- Callbacks --
+
+
+@callback(
+    Output("strategies-equity-chart", "figure"),
+    Input("strategies-days-filter", "value"),
+    Input("refresh-interval", "n_intervals"),
+)
+def update_equity_chart(days: int, _n: int) -> go.Figure:
+    data = current_app.config["data"]
+    curves = data.get_strategy_equity_curves(days=days)
+
+    fig = go.Figure()
+    for name, points in sorted(curves.items()):
+        if not points:
+            continue
+        xs, ys = zip(*points, strict=True)
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", name=name,
+        ))
+
+    fig.update_layout(
+        template="plotly_dark",
+        margin={"l": 40, "r": 20, "t": 20, "b": 40},
+        height=320,
+        yaxis_title="Realized + Unrealized P&L ($)",
+        xaxis_title=None,
+        legend={"orientation": "h", "y": -0.2},
+    )
+    if not curves:
+        fig.add_annotation(
+            text="No per-strategy snapshots yet. They'll populate as the bot ticks.",
+            showarrow=False, x=0.5, y=0.5, xref="paper", yref="paper",
+            font={"color": "#888"},
+        )
+    return fig
 
 
 @callback(

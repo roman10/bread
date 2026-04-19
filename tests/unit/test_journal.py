@@ -215,10 +215,13 @@ class TestGetJournal:
         assert entries[0].hold_days == 0
         assert entries[0].pnl == 50.0
 
-    def test_pairs_buy_sell_when_strategies_differ(self) -> None:
-        """FIFO pairing keys on symbol only — BUY/SELL attributed to different
-        strategies still pair. The resulting entry's strategy_name is the
-        opener's (the strategy that selected the trade).
+    def test_cross_strategy_sell_does_not_pair(self) -> None:
+        """A SELL whose strategy_name doesn't match the opening BUY is orphaned.
+
+        Under the new isolation contract, the engine always logs SELL with
+        the opener's strategy_name. A cross-strategy pair in OrderLog can
+        only be legacy/corrupt data, and we refuse to cross-attribute it —
+        silently mis-attributing P&L is worse than leaving the SELL orphan.
         """
         sf = _make_sf()
         t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
@@ -229,34 +232,39 @@ class TestGetJournal:
         with sf() as session:
             entries = get_journal(session)
 
-        assert len(entries) == 1
-        e = entries[0]
-        assert e.strategy_name == "ema_crossover"
-        assert e.pnl == 100.0
+        # No valid round-trip: BUY belongs to ema_crossover, SELL is orphan
+        assert entries == []
 
-    def test_fifo_pairing_on_symbol_does_not_cross_lots(self) -> None:
-        """Multiple B/S pairs on the same symbol with mixed strategy attribution
-        are paired in filled_at order; each pair takes its BUY's strategy.
+    def test_two_strategies_same_symbol_pair_independently(self) -> None:
+        """Two strategies each holding SPY pair their own BUY/SELL cleanly.
+
+        This is the whole point of (symbol, strategy_name) FIFO: each
+        strategy's round-trip is attributed to itself with its own fills.
         """
         sf = _make_sf()
         t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
         t2 = datetime(2026, 3, 5, 14, 0, tzinfo=UTC)
         t3 = datetime(2026, 3, 10, 10, 0, tzinfo=UTC)
         t4 = datetime(2026, 3, 15, 14, 0, tzinfo=UTC)
+        # Interleaved: A opens, B opens, B closes, A closes
         _fill(sf, "SPY", "BUY", 10, 500.0, t1, strategy="ema_crossover")
-        _fill(sf, "SPY", "SELL", 10, 520.0, t2, strategy="etf_momentum")
-        _fill(sf, "SPY", "BUY", 5, 510.0, t3, strategy="macd_divergence")
-        _fill(sf, "SPY", "SELL", 5, 505.0, t4, strategy="bb_mean_reversion")
+        _fill(sf, "SPY", "BUY", 5, 510.0, t2, strategy="macd_divergence")
+        _fill(sf, "SPY", "SELL", 5, 515.0, t3, strategy="macd_divergence")
+        _fill(sf, "SPY", "SELL", 10, 525.0, t4, strategy="ema_crossover")
 
         with sf() as session:
             entries = get_journal(session)
 
         assert len(entries) == 2
-        # Sorted by exit_date desc
-        assert entries[0].pnl == -25.0
-        assert entries[0].strategy_name == "macd_divergence"
-        assert entries[1].pnl == 200.0
-        assert entries[1].strategy_name == "ema_crossover"
+        by_strat = {e.strategy_name: e for e in entries}
+        # ema_crossover: BUY 500 → SELL 525, qty 10 → +250
+        assert by_strat["ema_crossover"].pnl == 250.0
+        assert by_strat["ema_crossover"].entry_price == 500.0
+        assert by_strat["ema_crossover"].exit_price == 525.0
+        # macd_divergence: BUY 510 → SELL 515, qty 5 → +25
+        assert by_strat["macd_divergence"].pnl == 25.0
+        assert by_strat["macd_divergence"].entry_price == 510.0
+        assert by_strat["macd_divergence"].exit_price == 515.0
 
     def test_orphan_leading_sell_does_not_consume_next_buy(self) -> None:
         """A leading orphan SELL must not consume the next BUY — that BUY

@@ -93,6 +93,31 @@ class PortfolioSnapshot(Base):
     )
 
 
+class StrategySnapshot(Base):
+    """Per-strategy equity snapshot — enables fair per-strategy equity curves.
+
+    Written each tick alongside PortfolioSnapshot. Realized P&L accumulates
+    from closed BUY/SELL pairs attributed to this strategy; unrealized comes
+    from currently-open positions the strategy holds at last known price.
+    Equity = realized + unrealized (deltas from a notional per-strategy
+    baseline — the dashboard charts the curve shape, not absolute equity).
+    """
+
+    __tablename__ = "strategy_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    strategy_name: Mapped[str] = mapped_column(String, nullable=False)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    unrealized_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    equity: Mapped[float] = mapped_column(Float, nullable=False)
+    open_positions: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index("ix_strategy_snapshots_strat_ts", "strategy_name", "timestamp_utc"),
+    )
+
+
 class ClaudeUsageLog(Base):
     __tablename__ = "claude_usage_log"
 

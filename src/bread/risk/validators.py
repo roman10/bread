@@ -11,6 +11,7 @@ from bread.risk.limits import (
     check_daily_loss,
     check_drawdown,
     check_max_positions,
+    check_max_positions_per_strategy,
     check_pdt,
     check_position_concentration,
     check_weekly_loss,
@@ -52,8 +53,20 @@ def validate_signal(
             ],
         )
 
-    # 3. Position limit
+    # 3a. Account-wide position limit (counts all strategies' positions)
     passed, reason = check_max_positions(len(positions), config.max_positions)
+    if not passed:
+        return ValidationResult(approved=False, rejections=[reason])
+
+    # 3b. Per-strategy position limit (counts only this strategy's positions)
+    strategy_open_count = sum(
+        1 for p in positions if p.strategy_name == signal.strategy_name
+    )
+    passed, reason = check_max_positions_per_strategy(
+        strategy_open_count,
+        config.max_positions_per_strategy,
+        signal.strategy_name,
+    )
     if not passed:
         return ValidationResult(approved=False, rejections=[reason])
 

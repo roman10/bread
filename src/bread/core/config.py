@@ -108,6 +108,7 @@ class BacktestSettings(BaseModel):
 class RiskSettings(BaseModel):
     risk_pct_per_trade: float = Field(default=0.005, gt=0, le=0.05)
     max_positions: int = Field(default=5, ge=1)
+    max_positions_per_strategy: int = Field(default=3, ge=1)
     max_position_pct: float = Field(default=0.20, gt=0, le=1.0)
     max_asset_class_pct: float = Field(default=0.40, gt=0, le=1.0)
     max_daily_loss_pct: float = Field(default=0.015, gt=0, le=1.0)

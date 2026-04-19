@@ -4,9 +4,23 @@ from __future__ import annotations
 
 
 def check_max_positions(open_count: int, max_positions: int) -> tuple[bool, str]:
-    """Reject if at or above the position limit."""
+    """Reject if at or above the account-wide position limit."""
     if open_count >= max_positions:
         return False, f"max positions exceeded ({open_count}/{max_positions})"
+    return True, ""
+
+
+def check_max_positions_per_strategy(
+    strategy_open_count: int,
+    max_per_strategy: int,
+    strategy_name: str,
+) -> tuple[bool, str]:
+    """Reject if the issuing strategy is at or above its per-strategy limit."""
+    if strategy_open_count >= max_per_strategy:
+        return False, (
+            f"max positions per strategy exceeded for '{strategy_name}' "
+            f"({strategy_open_count}/{max_per_strategy})"
+        )
     return True, ""
 
 

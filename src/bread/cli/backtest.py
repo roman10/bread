@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -14,14 +15,25 @@ from bread.core.logging import setup_logging
 from bread.data.alpaca_data import AlpacaDataProvider
 from bread.db.database import get_engine, get_session_factory, init_db
 
+if TYPE_CHECKING:
+    from bread.backtest.multi import MultiBacktestResult
+
 
 @app.command("backtest")
 def backtest_cmd(
-    strategy: str = typer.Option(..., "--strategy", help="Strategy name"),
+    strategy: list[str] = typer.Option(
+        ...,
+        "--strategy",
+        help=(
+            "Strategy name. Pass multiple --strategy flags to backtest several "
+            "strategies as independent sub-accounts (fair isolation); results "
+            "include per-strategy + aggregate."
+        ),
+    ),
     start: str = typer.Option(..., "--start", help="Start date YYYY-MM-DD"),
     end: str = typer.Option(..., "--end", help="End date YYYY-MM-DD"),
 ) -> None:
-    """Run a backtest for a strategy over a date range."""
+    """Run a backtest for one or more strategies over a date range."""
     try:
         config = load_config()
         setup_logging(config.app.log_level)
@@ -39,7 +51,24 @@ def backtest_cmd(
             start_date = date.fromisoformat(start)
             end_date = date.fromisoformat(end)
 
-            result = run_strategy_backtest(
+            # Single strategy: keep the original one-shot output.
+            if len(strategy) == 1:
+                result = run_strategy_backtest(
+                    strategy[0],
+                    start_date,
+                    end_date,
+                    config=config,
+                    session_factory=session_factory,
+                    provider=provider,
+                    universe_registry=universe_registry,
+                )
+                _print_single_result(strategy[0], start, end, result.metrics)
+                return
+
+            # Multi-strategy: per-strategy sub-accounts + aggregate portfolio row.
+            from bread.backtest.multi import run_multi_strategy_backtest
+
+            multi = run_multi_strategy_backtest(
                 strategy,
                 start_date,
                 end_date,
@@ -48,25 +77,84 @@ def backtest_cmd(
                 provider=provider,
                 universe_registry=universe_registry,
             )
-
-            m = result.metrics
-            typer.echo(f"Backtest: {strategy} | {start} to {end}")
-            typer.echo("---")
-            typer.echo(f"Total return:    {m['total_return_pct']:>8.2f}%")
-            typer.echo(f"CAGR:            {m['cagr_pct']:>8.2f}%")
-            typer.echo(f"Sharpe ratio:    {m['sharpe_ratio']:>8.2f}")
-            typer.echo(f"Sortino ratio:   {m['sortino_ratio']:>8.2f}")
-            typer.echo(f"Max drawdown:    {m['max_drawdown_pct']:>8.2f}%")
-            typer.echo(f"Win rate:        {m['win_rate_pct']:>8.2f}%")
-            typer.echo(f"Profit factor:   {m['profit_factor']:>8.2f}")
-            typer.echo(f"Total trades:    {m['total_trades']:>8d}")
-            typer.echo(f"Avg holding days:{m['avg_holding_days']:>8.2f}")
+            _print_multi_result(strategy, start, end, multi)
         finally:
             engine.dispose()
 
     except BreadError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise SystemExit(1) from exc
+
+
+def _print_single_result(
+    strategy: str, start: str, end: str, m: dict[str, float | int]
+) -> None:
+    typer.echo(f"Backtest: {strategy} | {start} to {end}")
+    typer.echo("---")
+    typer.echo(f"Total return:    {m['total_return_pct']:>8.2f}%")
+    typer.echo(f"CAGR:            {m['cagr_pct']:>8.2f}%")
+    typer.echo(f"Sharpe ratio:    {m['sharpe_ratio']:>8.2f}")
+    typer.echo(f"Sortino ratio:   {m['sortino_ratio']:>8.2f}")
+    typer.echo(f"Max drawdown:    {m['max_drawdown_pct']:>8.2f}%")
+    typer.echo(f"Win rate:        {m['win_rate_pct']:>8.2f}%")
+    typer.echo(f"Profit factor:   {m['profit_factor']:>8.2f}")
+    typer.echo(f"Total trades:    {m['total_trades']:>8d}")
+    typer.echo(f"Avg holding days:{m['avg_holding_days']:>8.2f}")
+
+
+def _print_multi_result(
+    strategies: list[str],
+    start: str,
+    end: str,
+    multi: MultiBacktestResult,
+) -> None:
+    typer.echo(f"Multi-strategy backtest | {start} to {end}")
+    typer.echo("=" * 92)
+    header = (
+        f"{'Strategy':<22} "
+        f"{'Return%':>8} "
+        f"{'CAGR%':>7} "
+        f"{'Sharpe':>7} "
+        f"{'MaxDD%':>7} "
+        f"{'Win%':>6} "
+        f"{'PF':>5} "
+        f"{'Trades':>7}"
+    )
+    typer.echo(header)
+    typer.echo("-" * 92)
+    for name in strategies:
+        if name in multi.failures:
+            typer.echo(f"{name:<22} FAILED: {multi.failures[name]}")
+            continue
+        r = multi.per_strategy[name]
+        m = r.metrics
+        pf = m.get("profit_factor", 0.0)
+        pf_str = "inf" if pf == float("inf") else f"{float(pf):.2f}"
+        typer.echo(
+            f"{name:<22} "
+            f"{float(m['total_return_pct']):>8.2f} "
+            f"{float(m['cagr_pct']):>7.2f} "
+            f"{float(m['sharpe_ratio']):>7.2f} "
+            f"{float(m['max_drawdown_pct']):>7.2f} "
+            f"{float(m['win_rate_pct']):>6.2f} "
+            f"{pf_str:>5} "
+            f"{int(m['total_trades']):>7d}"
+        )
+    typer.echo("-" * 92)
+    agg = multi.aggregate.metrics
+    agg_pf = agg.get("profit_factor", 0.0)
+    agg_pf_str = "inf" if agg_pf == float("inf") else f"{float(agg_pf):.2f}"
+    typer.echo(
+        f"{'AGGREGATE':<22} "
+        f"{float(agg['total_return_pct']):>8.2f} "
+        f"{float(agg['cagr_pct']):>7.2f} "
+        f"{float(agg['sharpe_ratio']):>7.2f} "
+        f"{float(agg['max_drawdown_pct']):>7.2f} "
+        f"{float(agg['win_rate_pct']):>6.2f} "
+        f"{agg_pf_str:>5} "
+        f"{int(agg['total_trades']):>7d}"
+    )
+    typer.echo("=" * 92)
 
 
 @app.command("compare")

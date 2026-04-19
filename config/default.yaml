@@ -83,7 +83,8 @@ backtest:
 
 risk:
   risk_pct_per_trade: 0.005
-  max_positions: 5
+  max_positions: 5                 # account-wide cap across all strategies
+  max_positions_per_strategy: 3    # per-strategy cap
   max_position_pct: 0.20
   max_asset_class_pct: 0.40
   max_daily_loss_pct: 0.015

@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from bread.core.exceptions import OrderError
 from bread.core.models import OrderSide, OrderStatus, Position, SignalDirection
-from bread.db.models import OrderLog, PortfolioSnapshot
+from bread.db.models import OrderLog, PortfolioSnapshot, StrategySnapshot
 from bread.risk.context import RiskContext, RiskContextRepo
 from bread.risk.limits import check_bracket_prices
 
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from bread.execution.broker import Broker
     from bread.execution.models import Account
     from bread.risk.manager import RiskManager
+
+UNKNOWN_STRATEGY = "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +66,41 @@ class ExecutionEngine:
         self._config = config
         self._session_factory = session_factory
         self._claude = claude_client
-        self._positions: dict[str, Position] = {}
+        # Positions are stored as a list so two strategies can each hold the
+        # same symbol. `Position.strategy_name` carries ownership; helper
+        # methods below encapsulate the (symbol, strategy_name) lookups.
+        self._positions: list[Position] = []
         self._last_reviews: dict[str, SignalReview] = {}
         self._risk_context = RiskContextRepo(session_factory)
 
-    def reconcile(self) -> None:
-        """Sync local state with broker positions.
+    # ------------------------------------------------------------------
+    # Position-list helpers
+    # ------------------------------------------------------------------
 
-        - Broker has position we don't track -> add with warning
-        - We track position broker doesn't have -> remove (bracket triggered)
+    def _find(self, symbol: str, strategy_name: str) -> Position | None:
+        for p in self._positions:
+            if p.symbol == symbol and p.strategy_name == strategy_name:
+                return p
+        return None
+
+    def _remove(self, position: Position) -> None:
+        # Identity-based removal — two Positions can share (symbol, strategy)
+        # only transiently during reconciliation, and we always want to drop
+        # the exact instance we inspected.
+        self._positions = [p for p in self._positions if p is not position]
+
+    def _held_symbol_strategy_keys(self) -> set[tuple[str, str]]:
+        return {(p.symbol, p.strategy_name) for p in self._positions}
+
+    def reconcile(self) -> None:
+        """Sync local state with broker reality per-position.
+
+        Each tracked Position carries its own bracket parent + OCO legs. A
+        closed bracket (either leg FILLED, or the whole group CANCELLED)
+        means that specific Position is done, regardless of whether another
+        strategy still holds shares of the same symbol. Broker-side shares
+        in excess of tracked qty go into an "unknown" bucket so they remain
+        visible without being eligible for strategy SELLs.
         """
         try:
             broker_positions = self._broker.get_positions()
@@ -80,38 +108,101 @@ class ExecutionEngine:
             logger.exception("Failed to fetch broker positions during reconciliation")
             return
 
-        broker_symbols: set[str] = set()
-        for bp in broker_positions:
-            symbol = bp.symbol
-            broker_symbols.add(symbol)
-            if symbol not in self._positions:
-                logger.warning(
-                    "Reconciliation: found untracked position %s qty=%s on broker",
-                    symbol,
-                    bp.qty,
+        broker_qty_by_symbol: dict[str, float] = {bp.symbol: bp.qty for bp in broker_positions}
+        broker_entry_price_by_symbol: dict[str, float] = {
+            bp.symbol: bp.avg_entry_price for bp in broker_positions
+        }
+
+        # 1) Drop tracked positions whose bracket is done on the broker.
+        to_remove: list[Position] = []
+        for pos in self._positions:
+            if pos.strategy_name == UNKNOWN_STRATEGY:
+                continue  # handled in step 3
+            if self._bracket_completed(pos):
+                logger.info(
+                    "Reconciliation: position %s/%s closed (bracket completed)",
+                    pos.symbol, pos.strategy_name,
                 )
-                self._positions[symbol] = Position(
+                to_remove.append(pos)
+        for pos in to_remove:
+            self._remove(pos)
+
+        # 2) Drop tracked positions for symbols the broker no longer holds.
+        # This catches the edge case where a bracket leg fill notification
+        # hasn't landed yet but the position is gone on the broker.
+        survivors: list[Position] = []
+        for pos in self._positions:
+            broker_qty = broker_qty_by_symbol.get(pos.symbol, 0.0)
+            if broker_qty <= 0 and pos.strategy_name != UNKNOWN_STRATEGY:
+                logger.info(
+                    "Reconciliation: position %s/%s no longer on broker — removing",
+                    pos.symbol, pos.strategy_name,
+                )
+                continue
+            survivors.append(pos)
+        self._positions = survivors
+
+        # 3) Reconcile "unknown" buckets against any broker-side excess qty
+        # (shares on the broker we don't account for, e.g. manually opened
+        # positions or reconciliation gaps). Collapse to one unknown Position
+        # per symbol holding the delta.
+        # Drop stale unknowns first; we'll re-create if still needed.
+        self._positions = [p for p in self._positions if p.strategy_name != UNKNOWN_STRATEGY]
+        tracked_qty_by_symbol: dict[str, int] = {}
+        for pos in self._positions:
+            tracked_qty_by_symbol[pos.symbol] = (
+                tracked_qty_by_symbol.get(pos.symbol, 0) + pos.qty
+            )
+
+        for symbol, broker_qty in broker_qty_by_symbol.items():
+            tracked = tracked_qty_by_symbol.get(symbol, 0)
+            delta = int(broker_qty) - tracked
+            if delta <= 0:
+                continue
+            entry_price = broker_entry_price_by_symbol.get(symbol, 0.0)
+            logger.warning(
+                "Reconciliation: %d untracked shares of %s on broker — tagged 'unknown'",
+                delta, symbol,
+            )
+            self._positions.append(
+                Position(
                     symbol=symbol,
-                    qty=int(bp.qty),
-                    entry_price=bp.avg_entry_price,
+                    qty=delta,
+                    entry_price=entry_price,
                     stop_loss_price=0.0,
                     take_profit_price=0.0,
                     broker_order_id="",
-                    strategy_name="unknown",
+                    strategy_name=UNKNOWN_STRATEGY,
                     entry_date=date.today(),
                 )
-
-        # Remove positions no longer on broker
-        closed = [s for s in self._positions if s not in broker_symbols]
-        for symbol in closed:
-            logger.info(
-                "Reconciliation: position %s no longer on broker (bracket triggered)",
-                symbol,
             )
-            del self._positions[symbol]
 
         # Update order fill status
         self._reconcile_orders()
+
+    def _bracket_completed(self, pos: Position) -> bool:
+        """True when either bracket OCO leg has FILLED.
+
+        Checking legs is more reliable than checking the parent, because the
+        parent is FILLED the moment the market BUY executes; the position
+        itself closes only when one of the OCO legs fills. A best-effort
+        check — any error returns False so a transient API issue doesn't
+        evict a live position.
+        """
+        for leg_id in (pos.stop_loss_order_id, pos.take_profit_order_id):
+            if not leg_id:
+                continue
+            try:
+                order = self._broker.get_order_by_id(leg_id)
+            except Exception:
+                logger.debug(
+                    "Could not fetch bracket leg %s for %s/%s",
+                    leg_id, pos.symbol, pos.strategy_name,
+                )
+                return False
+            if order is not None and order.status == OrderStatus.FILLED:
+                return True
+        return False
 
     def _reconcile_orders(self) -> None:
         """Update pending/accepted orders with fill status from broker."""
@@ -232,13 +323,9 @@ class ExecutionEngine:
         prices: dict[str, float],
     ) -> None:
         """Process strategy signals. SELL first, then BUY with risk checks."""
-        # Fetch open orders once for idempotency checks
-        try:
-            open_orders = self._broker.get_orders(status="open")
-            pending_symbols = {o.symbol for o in open_orders}
-        except Exception:
-            logger.exception("Failed to fetch open orders, proceeding with empty set")
-            pending_symbols = set()
+        # Pending-by-(symbol, strategy) comes from OrderLog so a strategy can
+        # still buy a symbol that another strategy has pending on the broker.
+        pending_keys = self._pending_order_keys()
 
         # Fetch account once
         try:
@@ -256,37 +343,16 @@ class ExecutionEngine:
         buy_signals = [s for s in signals if s.direction == SignalDirection.BUY]
         buy_signals.sort(key=lambda s: (-s.strength, s.symbol))
 
-        # Process SELLs first
+        # Process SELLs first — each closes the caller's own position only.
         for sig in sell_signals:
-            if sig.symbol not in self._positions:
-                logger.debug("SELL signal for %s ignored — no position", sig.symbol)
-                continue
-            position = self._positions[sig.symbol]
-            if position.strategy_name != "unknown" and sig.strategy_name != position.strategy_name:
+            position = self._find(sig.symbol, sig.strategy_name)
+            if position is None:
                 logger.debug(
-                    "SELL %s from '%s' ignored — position owned by '%s'",
-                    sig.symbol, sig.strategy_name, position.strategy_name,
+                    "SELL %s from '%s' ignored — no position for this strategy",
+                    sig.symbol, sig.strategy_name,
                 )
                 continue
-            try:
-                order_id = self._broker.close_position(sig.symbol)
-                if order_id:
-                    # Log SELL with the OPENER's strategy_name, not the exit
-                    # signal's. Keeps the raw orders table self-consistent for
-                    # BUY/SELL pairs, and any consumer that groups by strategy.
-                    self._log_order(
-                        sig.symbol,
-                        OrderSide.SELL,
-                        position.qty,
-                        OrderStatus.PENDING,
-                        order_id,
-                        position.strategy_name,
-                        sig.reason,
-                    )
-                    del self._positions[sig.symbol]
-                    logger.info("SELL %s: position closed, reason=%s", sig.symbol, sig.reason)
-            except OrderError:
-                logger.exception("Failed to close position %s", sig.symbol)
+            self._close_position(position, sig.reason)
 
         # Process BUYs — three phases: risk approval, Claude review, order submission
         risk_ctx = self._risk_context.fetch(equity, buying_power, daily_pnl)
@@ -294,17 +360,25 @@ class ExecutionEngine:
         # Phase A: Collect risk-approved signals.
         # Dedup is keyed on (symbol, strategy_name) — two strategies buying
         # the same symbol in one tick is allowed; one strategy emitting the
-        # same signal twice is not.
+        # same signal twice is not. "Already held" is also per-(symbol,
+        # strategy): strategy B may still open SPY when strategy A holds it.
         approved_buys: list[tuple[Signal, int, float]] = []
         approved_keys: set[tuple[str, str]] = set()
+        held_keys = self._held_symbol_strategy_keys()
         for sig in buy_signals:
-            if sig.symbol in self._positions:
-                logger.debug("BUY %s skipped — already held", sig.symbol)
-                continue
-            if sig.symbol in pending_symbols:
-                logger.debug("BUY %s skipped — pending order exists", sig.symbol)
-                continue
             key = (sig.symbol, sig.strategy_name)
+            if key in held_keys:
+                logger.debug(
+                    "BUY %s/%s skipped — strategy already holds this symbol",
+                    sig.symbol, sig.strategy_name,
+                )
+                continue
+            if key in pending_keys:
+                logger.debug(
+                    "BUY %s/%s skipped — pending order exists for this strategy",
+                    sig.symbol, sig.strategy_name,
+                )
+                continue
             if key in approved_keys:
                 logger.debug(
                     "BUY %s/%s skipped — duplicate signal in tick",
@@ -322,7 +396,7 @@ class ExecutionEngine:
                 price=price,
                 buying_power=buying_power,
                 equity=equity,
-                positions=list(self._positions.values()),
+                positions=list(self._positions),
                 peak_equity=risk_ctx.peak_equity,
                 daily_pnl=daily_pnl,
                 weekly_pnl=risk_ctx.weekly_pnl,
@@ -376,7 +450,7 @@ class ExecutionEngine:
                 continue
 
             try:
-                order_id = self._broker.submit_bracket_order(
+                bracket = self._broker.submit_bracket_order(
                     sig.symbol,
                     shares,
                     stop_loss_price,
@@ -386,36 +460,118 @@ class ExecutionEngine:
                 logger.exception("Failed to submit bracket order for %s", sig.symbol)
                 continue
 
-            self._positions[sig.symbol] = Position(
-                symbol=sig.symbol,
-                qty=shares,
-                entry_price=price,
-                stop_loss_price=stop_loss_price,
-                take_profit_price=take_profit_price,
-                broker_order_id=order_id,
-                strategy_name=sig.strategy_name,
-                entry_date=date.today(),
+            self._positions.append(
+                Position(
+                    symbol=sig.symbol,
+                    qty=shares,
+                    entry_price=price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    broker_order_id=bracket.parent_order_id,
+                    strategy_name=sig.strategy_name,
+                    entry_date=date.today(),
+                    stop_loss_order_id=bracket.stop_loss_order_id,
+                    take_profit_order_id=bracket.take_profit_order_id,
+                )
             )
             self._log_order(
                 sig.symbol,
                 OrderSide.BUY,
                 shares,
                 OrderStatus.PENDING,
-                order_id,
+                bracket.parent_order_id,
                 sig.strategy_name,
                 sig.reason,
                 stop_loss_price=stop_loss_price,
                 take_profit_price=take_profit_price,
             )
             logger.info(
-                "BUY %s: shares=%d price=%.2f stop=%.2f tp=%.2f order=%s",
+                "BUY %s/%s: shares=%d price=%.2f stop=%.2f tp=%.2f order=%s",
                 sig.symbol,
+                sig.strategy_name,
                 shares,
                 price,
                 stop_loss_price,
                 take_profit_price,
-                order_id,
+                bracket.parent_order_id,
             )
+
+    def _close_position(self, position: Position, reason: str) -> None:
+        """Cancel this position's OCO legs and submit a qty-specific SELL.
+
+        Unlike ``broker.close_position(symbol)`` — which liquidates EVERY share
+        of the symbol on the broker — this path only sells this Position's
+        qty, leaving other strategies' shares intact. The two OCO legs are
+        cancelled first so stop/take-profit can't fire against a different
+        strategy's shares after our sell.
+        """
+        if position.strategy_name == UNKNOWN_STRATEGY:
+            # Unknown-owner positions have no bracket we created; fall back to
+            # broker.close_position. This path is reset-flow / manual-cleanup
+            # territory, not a per-strategy SELL.
+            try:
+                self._broker.close_position(position.symbol)
+            except OrderError:
+                logger.exception("Failed to close unknown position %s", position.symbol)
+                return
+            self._remove(position)
+            logger.info("SELL %s (unknown): closed via close_position", position.symbol)
+            return
+
+        for leg_id in (position.stop_loss_order_id, position.take_profit_order_id):
+            if leg_id:
+                try:
+                    self._broker.cancel_order(leg_id)
+                except Exception:
+                    logger.debug("Leg cancel failed for %s (leg=%s)", position.symbol, leg_id)
+
+        try:
+            order_id = self._broker.submit_market_sell(position.symbol, position.qty)
+        except OrderError:
+            logger.exception(
+                "Failed to submit market sell for %s/%s",
+                position.symbol, position.strategy_name,
+            )
+            return
+
+        self._log_order(
+            position.symbol,
+            OrderSide.SELL,
+            position.qty,
+            OrderStatus.PENDING,
+            order_id,
+            position.strategy_name,
+            reason,
+        )
+        self._remove(position)
+        logger.info(
+            "SELL %s/%s: qty=%d order=%s reason=%s",
+            position.symbol, position.strategy_name, position.qty, order_id, reason,
+        )
+
+    def _pending_order_keys(self) -> set[tuple[str, str]]:
+        """Return {(symbol, strategy_name)} of orders currently pending.
+
+        Reads from the local OrderLog rather than broker.get_orders because
+        the broker doesn't know which of our strategies owns an order. The
+        broker's open-orders view is used separately by other callers that
+        need raw broker state.
+        """
+        try:
+            with self._session_factory() as session:
+                rows = (
+                    session.execute(
+                        select(OrderLog.symbol, OrderLog.strategy_name).where(
+                            OrderLog.status.in_(["PENDING", "ACCEPTED"]),
+                            OrderLog.side == "BUY",
+                        )
+                    )
+                    .all()
+                )
+                return {(sym, strat) for sym, strat in rows}
+        except Exception:
+            logger.exception("Failed to fetch pending order keys, proceeding with empty set")
+            return set()
 
     def _claude_review_batch(
         self,
@@ -433,7 +589,9 @@ class ExecutionEngine:
         context = TradeContext(
             equity=risk_ctx.equity,
             buying_power=risk_ctx.buying_power,
-            open_positions=list(self._positions.keys()),
+            # Collapse to unique symbols — the review context is per-symbol
+            # risk color, not per-strategy attribution.
+            open_positions=sorted({p.symbol for p in self._positions}),
             daily_pnl=risk_ctx.daily_pnl,
             weekly_pnl=risk_ctx.weekly_pnl,
             peak_equity=risk_ctx.peak_equity,
@@ -490,7 +648,7 @@ class ExecutionEngine:
 
     def get_positions(self) -> list[Position]:
         """Return current tracked positions."""
-        return list(self._positions.values())
+        return list(self._positions)
 
     def get_account(self) -> Account:
         """Return the broker account snapshot."""
@@ -572,19 +730,108 @@ class ExecutionEngine:
             adjusted_equity = equity + cost_adjustment  # cost_adjustment is negative
             adjusted_cash = cash + cost_adjustment
 
+            now_ts = datetime.now(UTC)
             snapshot = PortfolioSnapshot(
-                timestamp_utc=datetime.now(UTC),
+                timestamp_utc=now_ts,
                 equity=adjusted_equity,
                 cash=adjusted_cash,
                 positions_value=adjusted_equity - adjusted_cash,
                 open_positions=len(self._positions),
                 daily_pnl=daily_pnl,
             )
+            # Per-strategy snapshots — the dashboard uses these to render
+            # separate equity curves per strategy, critical for fair comparison.
+            current_prices = self._current_prices_by_symbol()
+            strategy_snaps = self._build_strategy_snapshots(now_ts, current_prices)
+
             with self._session_factory() as session:
                 session.add(snapshot)
+                for ss in strategy_snaps:
+                    session.add(ss)
                 session.commit()
         except Exception:
             logger.exception("Failed to save portfolio snapshot")
+
+    def _current_prices_by_symbol(self) -> dict[str, float]:
+        """Fetch the broker's current per-symbol prices for unrealized-P&L calc."""
+        try:
+            broker_positions = self._broker.get_positions()
+        except Exception:
+            logger.exception("Failed to fetch broker positions for snapshot")
+            return {}
+        return {bp.symbol: bp.current_price for bp in broker_positions}
+
+    def _build_strategy_snapshots(
+        self,
+        timestamp: datetime,
+        current_prices: dict[str, float],
+    ) -> list[StrategySnapshot]:
+        """Build one StrategySnapshot per strategy with activity (open OR closed).
+
+        Realized P&L comes from the trade journal (FIFO-paired BUY/SELL rows in
+        OrderLog). Unrealized P&L comes from each tracked Position priced at the
+        broker's current price. Equity = realized + unrealized — a delta curve
+        relative to a notional zero baseline, which is enough for the dashboard
+        to compare strategy trajectories over time.
+        """
+        from bread.monitoring.journal import get_all_strategies_summary
+
+        try:
+            with self._session_factory() as session:
+                summaries = get_all_strategies_summary(
+                    session, days=10_000, current_prices=current_prices,
+                )
+        except Exception:
+            logger.exception("Failed to compute per-strategy summaries for snapshot")
+            return []
+
+        # Make sure strategies with only open (unmatched) positions also get a
+        # row — the summary filters on closed-round-trip presence, so a pure
+        # open-position strategy would otherwise be invisible on the chart.
+        strategies_with_open: dict[str, list[Position]] = {}
+        for p in self._positions:
+            if p.strategy_name == UNKNOWN_STRATEGY:
+                continue
+            strategies_with_open.setdefault(p.strategy_name, []).append(p)
+
+        snaps: list[StrategySnapshot] = []
+        seen: set[str] = set()
+
+        for summary in summaries:
+            snaps.append(
+                StrategySnapshot(
+                    timestamp_utc=timestamp,
+                    strategy_name=summary.strategy_name,
+                    realized_pnl=summary.realized_pnl,
+                    unrealized_pnl=summary.unrealized_pnl,
+                    equity=summary.total_pnl,
+                    open_positions=summary.open_positions,
+                )
+            )
+            seen.add(summary.strategy_name)
+
+        for strategy_name, positions in strategies_with_open.items():
+            if strategy_name in seen:
+                continue
+            # Compute unrealized directly from our tracked positions.
+            unrealized = 0.0
+            for pos in positions:
+                price = current_prices.get(pos.symbol)
+                if price is None:
+                    continue
+                unrealized += (price - pos.entry_price) * pos.qty
+            snaps.append(
+                StrategySnapshot(
+                    timestamp_utc=timestamp,
+                    strategy_name=strategy_name,
+                    realized_pnl=0.0,
+                    unrealized_pnl=unrealized,
+                    equity=unrealized,
+                    open_positions=len(positions),
+                )
+            )
+
+        return snaps
 
     def _log_order(
         self,

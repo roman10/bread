@@ -15,8 +15,16 @@ from bread.core.models import OrderSide, OrderStatus, Position, Signal, SignalDi
 from bread.db.database import init_db
 from bread.db.models import OrderLog, PortfolioSnapshot
 from bread.execution.engine import ExecutionEngine
-from bread.execution.models import Account, BrokerOrder, BrokerPosition
+from bread.execution.models import Account, BracketOrderIds, BrokerOrder, BrokerPosition
 from bread.risk.validators import ValidationResult
+
+
+def _bracket(parent_id: str, stop: str = "", tp: str = "") -> BracketOrderIds:
+    return BracketOrderIds(
+        parent_order_id=parent_id,
+        stop_loss_order_id=stop,
+        take_profit_order_id=tp,
+    )
 
 
 def _make_signal(
@@ -123,9 +131,16 @@ def _make_engine(
     mock_broker.get_account.return_value = _mock_account()
     mock_broker.get_positions.return_value = []
     mock_broker.get_orders.return_value = []
+    mock_broker.get_order_by_id.return_value = None
+    mock_broker.submit_bracket_order.return_value = _bracket("order-default")
+    mock_broker.submit_market_sell.return_value = "sell-default"
+    mock_broker.cancel_order.return_value = True
 
-    mock_risk = risk_manager or MagicMock()
-    mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+    if risk_manager is None:
+        mock_risk = MagicMock()
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+    else:
+        mock_risk = risk_manager
 
     # Build a minimal config
     from bread.core.config import load_config
@@ -153,7 +168,7 @@ class TestReconcile:
     def test_removes_closed_position(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
         # Pre-populate a local position
-        engine._positions["SPY"] = _make_position("SPY")
+        engine._positions.append(_make_position("SPY"))
         # Broker says no positions
         mock_broker.get_positions.return_value = []
 
@@ -163,7 +178,7 @@ class TestReconcile:
 
     def test_keeps_matching_positions(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
-        engine._positions["SPY"] = _make_position("SPY")
+        engine._positions.append(_make_position("SPY"))
         mock_broker.get_positions.return_value = [
             _broker_position("SPY", qty=10.0, avg_entry_price=100.0),
         ]
@@ -176,14 +191,15 @@ class TestReconcile:
 class TestProcessSignals:
     def test_sell_with_position_closes(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
-        engine._positions["SPY"] = _make_position("SPY")
-        mock_broker.close_position.return_value = "close-123"
+        engine._positions.append(_make_position("SPY"))
+        mock_broker.submit_market_sell.return_value = "sell-123"
 
         signals = [_make_signal("SPY", SignalDirection.SELL)]
         engine.process_signals(signals, {"SPY": 510.0})
 
-        mock_broker.close_position.assert_called_once_with("SPY")
-        assert "SPY" not in engine._positions
+        mock_broker.submit_market_sell.assert_called_once_with("SPY", 10)
+        mock_broker.close_position.assert_not_called()
+        assert not any(p.symbol == "SPY" for p in engine._positions)
 
     def test_cross_strategy_sell_blocked_by_engine_guard(
         self, monkeypatch
@@ -199,8 +215,7 @@ class TestProcessSignals:
             broker_order_id="open-1", strategy_name="ema_crossover",
             entry_date=date.today(),
         )
-        engine._positions["SPY"] = opener_position
-        mock_broker.close_position.return_value = "close-1"
+        engine._positions.append(opener_position)
 
         exit_signal = Signal(
             symbol="SPY", direction=SignalDirection.SELL,
@@ -211,7 +226,8 @@ class TestProcessSignals:
         engine.process_signals([exit_signal], {"SPY": 510.0})
 
         mock_broker.close_position.assert_not_called()
-        assert "SPY" in engine._positions  # position untouched
+        mock_broker.submit_market_sell.assert_not_called()
+        assert any(p.symbol == "SPY" for p in engine._positions)  # position untouched
 
         with sf() as session:
             sell_row = (
@@ -227,10 +243,11 @@ class TestProcessSignals:
         engine.process_signals(signals, {"SPY": 510.0})
 
         mock_broker.close_position.assert_not_called()
+        mock_broker.submit_market_sell.assert_not_called()
 
     def test_buy_already_held_skipped(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
-        engine._positions["SPY"] = _make_position("SPY")
+        engine._positions.append(_make_position("SPY"))
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
         engine.process_signals(signals, {"SPY": 510.0})
@@ -238,21 +255,65 @@ class TestProcessSignals:
         mock_broker.submit_bracket_order.assert_not_called()
 
     def test_buy_pending_order_skipped(self, monkeypatch) -> None:
-        engine, mock_broker, _, _ = _make_engine(monkeypatch)
-        mock_broker.get_orders.return_value = [
-            _broker_order(id="o-pending", symbol="SPY"),
-        ]
+        """Pending OrderLog row for the same (symbol, strategy) blocks a duplicate BUY.
 
-        signals = [_make_signal("SPY", SignalDirection.BUY)]
+        Pending detection is OrderLog-based (not broker-based) so a pending
+        order owned by strategy A does not block strategy B from opening the
+        same symbol.
+        """
+        engine, mock_broker, _, sf = _make_engine(monkeypatch)
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="o-pending",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="test",
+                    reason="prior tick",
+                    created_at_utc=now,
+                )
+            )
+            session.commit()
+
+        signals = [_make_signal("SPY", SignalDirection.BUY, strategy_name="test")]
         engine.process_signals(signals, {"SPY": 510.0})
 
         mock_broker.submit_bracket_order.assert_not_called()
+
+    def test_pending_buy_does_not_block_other_strategy(self, monkeypatch) -> None:
+        """A strategy-A pending BUY must not block strategy B's BUY on the same symbol."""
+        engine, mock_broker, mock_risk, sf = _make_engine(monkeypatch)
+        mock_broker.submit_bracket_order.return_value = _bracket("order-b")
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+        now = datetime.now(UTC)
+        with sf() as session:
+            session.add(
+                OrderLog(
+                    broker_order_id="o-pending-a",
+                    symbol="SPY",
+                    side="BUY",
+                    qty=10,
+                    status="PENDING",
+                    strategy_name="strategy_a",
+                    reason="prior tick",
+                    created_at_utc=now,
+                )
+            )
+            session.commit()
+
+        signals = [_make_signal("SPY", SignalDirection.BUY, strategy_name="strategy_b")]
+        engine.process_signals(signals, {"SPY": 510.0})
+
+        mock_broker.submit_bracket_order.assert_called_once()
 
     def test_same_strategy_duplicate_symbol_in_tick_submits_once(
         self, monkeypatch
     ) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
         mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
 
         signals = [
@@ -267,7 +328,7 @@ class TestProcessSignals:
         """Cross-strategy dupes are intentional — guard against re-tightening
         this check to symbol-only dedup."""
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
-        mock_broker.submit_bracket_order.side_effect = ["order-1", "order-2"]
+        mock_broker.submit_bracket_order.side_effect = [_bracket("order-1"), _bracket("order-2")]
         mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
 
         signals = [
@@ -280,7 +341,7 @@ class TestProcessSignals:
 
     def test_buy_approved_submits_bracket(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
-        mock_broker.submit_bracket_order.return_value = "order-abc"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-abc")
         mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -290,7 +351,7 @@ class TestProcessSignals:
         args = mock_broker.submit_bracket_order.call_args
         assert args[0][0] == "SPY"  # symbol
         assert args[0][1] == 10  # qty
-        assert "SPY" in engine._positions
+        assert any(p.symbol == "SPY" for p in engine._positions)
 
     def test_buy_rejected_no_order(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
@@ -314,9 +375,9 @@ class TestProcessSignals:
 
     def test_sell_before_buy_ordering(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
-        engine._positions["SPY"] = _make_position("SPY")
-        mock_broker.close_position.return_value = "close-123"
-        mock_broker.submit_bracket_order.return_value = "buy-456"
+        engine._positions.append(_make_position("SPY"))
+        mock_broker.submit_market_sell.return_value = "sell-123"
+        mock_broker.submit_bracket_order.return_value = _bracket("buy-456")
         mock_risk.evaluate.return_value = (5, ValidationResult(approved=True))
 
         signals = [
@@ -326,12 +387,12 @@ class TestProcessSignals:
         engine.process_signals(signals, {"SPY": 510.0, "QQQ": 400.0})
 
         # SELL should happen first
-        mock_broker.close_position.assert_called_once_with("SPY")
+        mock_broker.submit_market_sell.assert_called_once_with("SPY", 10)
         mock_broker.submit_bracket_order.assert_called_once()
 
     def test_order_logged_to_db(self, monkeypatch) -> None:
         engine, mock_broker, mock_risk, sf = _make_engine(monkeypatch)
-        mock_broker.submit_bracket_order.return_value = "order-abc"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-abc")
         mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -368,7 +429,7 @@ class TestProcessSignals:
         engine.process_signals(signals, {"SPY": 500.0})
 
         mock_broker.submit_bracket_order.assert_not_called()
-        assert "SPY" not in engine._positions
+        assert not any(p.symbol == "SPY" for p in engine._positions)
         with sf() as session:
             orders = session.execute(select(OrderLog)).scalars().all()
             assert len(orders) == 1
@@ -626,7 +687,7 @@ class TestProcessSignalsExceptionPaths:
         """When get_orders raises, processing continues with empty pending set."""
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
         mock_broker.get_orders.side_effect = Exception("API error")
-        mock_broker.submit_bracket_order.return_value = "order-abc"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-abc")
         mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -645,12 +706,12 @@ class TestProcessSignalsExceptionPaths:
 
         mock_broker.submit_bracket_order.assert_not_called()
 
-    def test_close_position_failure_continues(self, monkeypatch) -> None:
-        """When close_position raises OrderError, other signals still process."""
+    def test_sell_submit_failure_continues(self, monkeypatch) -> None:
+        """When submit_market_sell raises OrderError, other signals still process."""
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
-        engine._positions["SPY"] = _make_position("SPY")
-        mock_broker.close_position.side_effect = OrderError("API error")
-        mock_broker.submit_bracket_order.return_value = "order-abc"
+        engine._positions.append(_make_position("SPY"))
+        mock_broker.submit_market_sell.side_effect = OrderError("API error")
+        mock_broker.submit_bracket_order.return_value = _bracket("order-abc")
         mock_risk.evaluate.return_value = (5, ValidationResult(approved=True))
 
         signals = [
@@ -667,7 +728,7 @@ class TestProcessSignalsExceptionPaths:
         engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
         mock_broker.submit_bracket_order.side_effect = [
             OrderError("fail"),
-            "order-abc",
+            _bracket("order-abc"),
         ]
         mock_risk.evaluate.return_value = (5, ValidationResult(approved=True))
 
@@ -678,8 +739,8 @@ class TestProcessSignalsExceptionPaths:
         engine.process_signals(signals, {"SPY": 500.0, "QQQ": 400.0})
 
         # SPY fails, QQQ succeeds
-        assert "SPY" not in engine._positions
-        assert "QQQ" in engine._positions
+        assert not any(p.symbol == "SPY" for p in engine._positions)
+        assert any(p.symbol == "QQQ" for p in engine._positions)
 
 
 class TestPaperCostAdjustment:
@@ -986,8 +1047,11 @@ def _make_engine_with_claude(
     mock_broker.get_positions.return_value = []
     mock_broker.get_orders.return_value = []
 
-    mock_risk = risk_manager or MagicMock()
-    mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+    if risk_manager is None:
+        mock_risk = MagicMock()
+        mock_risk.evaluate.return_value = (10, ValidationResult(approved=True))
+    else:
+        mock_risk = risk_manager
 
     from bread.core.config import load_config
 
@@ -1035,7 +1099,7 @@ class TestClaudeReview:
             monkeypatch,
             claude_client=None,
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1051,7 +1115,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             claude_enabled=False,
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1070,7 +1134,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             review_mode="advisory",
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1113,7 +1177,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             review_mode="gating",
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1131,7 +1195,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             review_mode="gating",
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1162,7 +1226,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             risk_manager=mock_risk,
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         # SPY has higher strength so it sorts first (processed first by risk)
         engine.process_signals(
@@ -1184,7 +1248,7 @@ class TestClaudeReview:
             monkeypatch,
             claude_client=mock_claude,
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1204,7 +1268,7 @@ class TestClaudeReview:
             monkeypatch,
             claude_client=mock_claude,
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         engine.process_signals(
             [_make_signal("SPY")],
@@ -1230,7 +1294,7 @@ class TestClaudeReview:
             claude_client=mock_claude,
             review_mode="gating",
         )
-        mock_broker.submit_bracket_order.return_value = "order-1"
+        mock_broker.submit_bracket_order.return_value = _bracket("order-1")
 
         # SPY higher strength → sorted first
         engine.process_signals(
@@ -1352,3 +1416,182 @@ class TestStaleOrderTimeout:
             assert order is not None
             assert order.status == "CANCELLED"
         mock_broker.cancel_orders_for_symbol.assert_not_called()
+
+
+class TestStrategyIsolation:
+    """Tests that defend the per-strategy isolation invariant.
+
+    See memory/project_multi_strategy_positions.md: each strategy is an
+    independent portfolio. Two strategies CAN hold the same symbol; a SELL
+    from one strategy must not touch another strategy's shares.
+    """
+
+    def test_two_strategies_open_same_symbol_in_one_tick(self, monkeypatch) -> None:
+        engine, mock_broker, mock_risk, _ = _make_engine(monkeypatch)
+        mock_broker.submit_bracket_order.side_effect = [
+            _bracket("order-a", stop="sl-a", tp="tp-a"),
+            _bracket("order-b", stop="sl-b", tp="tp-b"),
+        ]
+        mock_risk.evaluate.return_value = (5, ValidationResult(approved=True))
+
+        signals = [
+            _make_signal("SPY", strategy_name="strategy_a"),
+            _make_signal("SPY", strategy_name="strategy_b"),
+        ]
+        engine.process_signals(signals, {"SPY": 500.0})
+
+        assert len(engine._positions) == 2
+        owners = sorted(p.strategy_name for p in engine._positions if p.symbol == "SPY")
+        assert owners == ["strategy_a", "strategy_b"]
+        # Each position owns its own bracket legs — critical for SELL isolation
+        by_strat = {p.strategy_name: p for p in engine._positions}
+        assert by_strat["strategy_a"].stop_loss_order_id == "sl-a"
+        assert by_strat["strategy_b"].stop_loss_order_id == "sl-b"
+
+    def test_sell_cancels_only_this_strategys_legs(self, monkeypatch) -> None:
+        engine, mock_broker, _, _ = _make_engine(monkeypatch)
+        mock_broker.submit_market_sell.return_value = "sell-b"
+        a = Position(
+            symbol="SPY", qty=10, entry_price=500.0,
+            stop_loss_price=475.0, take_profit_price=525.0,
+            broker_order_id="order-a", strategy_name="strategy_a",
+            entry_date=date.today(),
+            stop_loss_order_id="sl-a", take_profit_order_id="tp-a",
+        )
+        b = Position(
+            symbol="SPY", qty=7, entry_price=500.0,
+            stop_loss_price=475.0, take_profit_price=525.0,
+            broker_order_id="order-b", strategy_name="strategy_b",
+            entry_date=date.today(),
+            stop_loss_order_id="sl-b", take_profit_order_id="tp-b",
+        )
+        engine._positions.extend([a, b])
+
+        engine.process_signals(
+            [_make_signal("SPY", SignalDirection.SELL, strategy_name="strategy_b")],
+            {"SPY": 510.0},
+        )
+
+        # Only strategy_b's legs were cancelled; close_position not called (broker-wide)
+        cancelled = {c.args[0] for c in mock_broker.cancel_order.call_args_list}
+        assert cancelled == {"sl-b", "tp-b"}
+        mock_broker.close_position.assert_not_called()
+        mock_broker.submit_market_sell.assert_called_once_with("SPY", 7)
+        # Strategy_a's position survives intact
+        survivors = [p for p in engine._positions if p.symbol == "SPY"]
+        assert len(survivors) == 1
+        assert survivors[0].strategy_name == "strategy_a"
+        assert survivors[0].stop_loss_order_id == "sl-a"
+
+    def test_per_strategy_max_positions_enforced(self, monkeypatch) -> None:
+        """A strategy hitting its per-strategy cap is blocked; other strategies unaffected."""
+        from bread.risk.manager import RiskManager
+
+        engine, mock_broker, _, _ = _make_engine(
+            monkeypatch,
+            risk_manager=RiskManager(
+                # Tight per-strategy cap, generous global cap
+                engine_config := _risk_settings(max_positions_per_strategy=2, max_positions=10),
+            ),
+        )
+        _ = engine_config  # silence lint — set before engine construction
+        mock_broker.submit_bracket_order.return_value = _bracket("parent")
+
+        # strategy_a already holds 2 positions — next BUY must be rejected
+        for sym in ("AAA", "BBB"):
+            engine._positions.append(
+                Position(
+                    symbol=sym, qty=1, entry_price=100.0,
+                    stop_loss_price=95.0, take_profit_price=110.0,
+                    broker_order_id=f"o-{sym}", strategy_name="strategy_a",
+                    entry_date=date.today(),
+                )
+            )
+
+        signals = [
+            _make_signal("CCC", strategy_name="strategy_a"),   # blocked
+            _make_signal("CCC", strategy_name="strategy_b"),   # allowed
+        ]
+        engine.process_signals(signals, {"CCC": 50.0})
+
+        # Only strategy_b's BUY made it to the broker
+        assert mock_broker.submit_bracket_order.call_count == 1
+        held = {p.strategy_name for p in engine._positions if p.symbol == "CCC"}
+        assert held == {"strategy_b"}
+
+    def test_global_max_positions_enforced_across_strategies(self, monkeypatch) -> None:
+        from bread.risk.manager import RiskManager
+
+        engine, mock_broker, _, _ = _make_engine(
+            monkeypatch,
+            risk_manager=RiskManager(
+                _risk_settings(max_positions=3, max_positions_per_strategy=5),
+            ),
+        )
+        mock_broker.submit_bracket_order.return_value = _bracket("parent")
+
+        # 3 positions spread across two strategies fills the global cap
+        for i, (sym, strat) in enumerate(
+            [("AAA", "s1"), ("BBB", "s1"), ("CCC", "s2")]
+        ):
+            engine._positions.append(
+                Position(
+                    symbol=sym, qty=1, entry_price=100.0,
+                    stop_loss_price=95.0, take_profit_price=110.0,
+                    broker_order_id=f"o-{i}", strategy_name=strat,
+                    entry_date=date.today(),
+                )
+            )
+
+        # Neither strategy can open a fourth — global cap dominates
+        signals = [
+            _make_signal("DDD", strategy_name="s1"),
+            _make_signal("DDD", strategy_name="s2"),
+        ]
+        engine.process_signals(signals, {"DDD": 50.0})
+        mock_broker.submit_bracket_order.assert_not_called()
+
+    def test_reconcile_removes_only_bracket_completed_position(self, monkeypatch) -> None:
+        """If strategy_a's TP leg filled, only strategy_a's position is removed."""
+        engine, mock_broker, _, _ = _make_engine(monkeypatch)
+
+        a = Position(
+            symbol="SPY", qty=10, entry_price=500.0,
+            stop_loss_price=475.0, take_profit_price=525.0,
+            broker_order_id="order-a", strategy_name="strategy_a",
+            entry_date=date.today(),
+            stop_loss_order_id="sl-a", take_profit_order_id="tp-a",
+        )
+        b = Position(
+            symbol="SPY", qty=7, entry_price=500.0,
+            stop_loss_price=475.0, take_profit_price=525.0,
+            broker_order_id="order-b", strategy_name="strategy_b",
+            entry_date=date.today(),
+            stop_loss_order_id="sl-b", take_profit_order_id="tp-b",
+        )
+        engine._positions.extend([a, b])
+
+        def _get_order(order_id: str):
+            if order_id == "tp-a":
+                return _broker_order(id="tp-a", status=OrderStatus.FILLED)
+            return _broker_order(id=order_id, status=OrderStatus.ACCEPTED)
+
+        mock_broker.get_order_by_id.side_effect = _get_order
+        # Broker still reports qty=7 on SPY (only strategy_b's shares remain)
+        mock_broker.get_positions.return_value = [
+            _broker_position("SPY", qty=7.0, avg_entry_price=500.0),
+        ]
+
+        engine.reconcile()
+
+        # strategy_a removed, strategy_b survives
+        survivors = [p for p in engine._positions if p.symbol == "SPY"]
+        assert len(survivors) == 1
+        assert survivors[0].strategy_name == "strategy_b"
+
+
+def _risk_settings(**overrides):
+    """Build a RiskSettings with defaults + overrides for isolation tests."""
+    from bread.core.config import RiskSettings
+
+    return RiskSettings(**overrides)

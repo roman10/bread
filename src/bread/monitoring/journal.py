@@ -48,38 +48,42 @@ class OpenPosition:
 def _pair_orders(
     rows: list[OrderLog],
 ) -> tuple[list[JournalEntry], dict[str, list[OrderLog]]]:
-    """FIFO-pair BUYs with SELLs by symbol.
+    """FIFO-pair BUYs with SELLs by (symbol, strategy_name).
 
-    The engine enforces one open position per symbol across strategies (BUY
-    rejected if symbol already held; SELL only emitted on existing position),
-    so the interleaved sequence per symbol is B1,S1,B2,S2,... — FIFO on symbol
-    alone cannot cross unrelated lots. Pair strategy attribution comes from
-    the BUY row (the strategy that selected the trade).
+    Two strategies can hold the same symbol simultaneously (see
+    memory/project_multi_strategy_positions.md). Pairing by symbol alone
+    would cross-attribute their trades: strategy_a's BUY could pair with
+    strategy_b's SELL, polluting both strategies' per-strategy P&L. The
+    engine logs every SELL with the opener's strategy_name, so pairing by
+    (symbol, strategy_name) keeps each strategy's round-trips isolated.
 
-    Returns (journal_entries, unmatched_buys_by_symbol). The unmatched tail
-    represents currently-open positions.
+    Returns (journal_entries, unmatched_buys_by_symbol). ``unmatched`` is
+    still keyed on symbol alone — consumers (open-position builders)
+    aggregate by symbol and attribute per-row via BUY.strategy_name.
     """
-    buys: dict[str, list[OrderLog]] = {}
-    sells: dict[str, list[OrderLog]] = {}
+    buys: dict[tuple[str, str], list[OrderLog]] = {}
+    sells: dict[tuple[str, str], list[OrderLog]] = {}
     for row in rows:
+        key = (row.symbol, row.strategy_name)
         if row.side == "BUY":
-            buys.setdefault(row.symbol, []).append(row)
+            buys.setdefault(key, []).append(row)
         elif row.side == "SELL":
-            sells.setdefault(row.symbol, []).append(row)
+            sells.setdefault(key, []).append(row)
 
     entries: list[JournalEntry] = []
-    consumed: dict[str, int] = {}
+    consumed: dict[tuple[str, str], int] = {}
 
-    # For each sell, match the earliest unmatched buy (FIFO). If the candidate
-    # BUY is timestamped AFTER the SELL, the SELL is orphan (its opening BUY
-    # predates our history); skip the SELL but leave buy_idx alone — that BUY
-    # belongs to a later SELL.
-    for sym, sell_list in sells.items():
-        buy_list = buys.get(sym, [])
+    # For each sell, match the earliest unmatched buy (FIFO) within the same
+    # (symbol, strategy). If the candidate BUY is timestamped AFTER the SELL,
+    # the SELL is orphan (its opening BUY predates our history); skip the
+    # SELL but leave buy_idx alone — that BUY belongs to a later SELL.
+    for key, sell_list in sells.items():
+        sym, _ = key
+        buy_list = buys.get(key, [])
         buy_idx = 0
         for sell_order in sell_list:
             if buy_idx >= len(buy_list):
-                logger.debug("Orphan SELL for %s — no unmatched BUY", sym)
+                logger.debug("Orphan SELL for %s/%s — no unmatched BUY", sym, key[1])
                 continue
 
             buy_order = buy_list[buy_idx]
@@ -89,13 +93,15 @@ def _pair_orders(
                 and sell_order.filled_at_utc is not None
                 and buy_order.filled_at_utc > sell_order.filled_at_utc
             ):
-                logger.debug("Orphan SELL for %s — BUY missing from history", sym)
+                logger.debug(
+                    "Orphan SELL for %s/%s — BUY missing from history", sym, key[1]
+                )
                 continue
 
             buy_idx += 1
 
             if buy_order.filled_price is None or sell_order.filled_price is None:
-                logger.debug("Missing fill price for %s — skipping pair", sym)
+                logger.debug("Missing fill price for %s/%s — skipping pair", sym, key[1])
                 continue
 
             entry_price = float(buy_order.filled_price)
@@ -125,13 +131,14 @@ def _pair_orders(
                 entry_reason=buy_order.reason,
                 exit_reason=sell_order.reason,
             ))
-        consumed[sym] = buy_idx
+        consumed[key] = buy_idx
 
     unmatched: dict[str, list[OrderLog]] = {}
-    for sym, buy_list in buys.items():
-        c = consumed.get(sym, 0)
+    for key, buy_list in buys.items():
+        sym, _ = key
+        c = consumed.get(key, 0)
         if c < len(buy_list):
-            unmatched[sym] = buy_list[c:]
+            unmatched.setdefault(sym, []).extend(buy_list[c:])
 
     return entries, unmatched
 

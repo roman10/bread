@@ -52,3 +52,8 @@ class Position:
     broker_order_id: str
     strategy_name: str
     entry_date: date
+    # Bracket OCO legs — kept so SELL can cancel this position's specific
+    # stop-loss / take-profit without touching another strategy's legs on
+    # the same symbol. Empty when reconciled-in from the broker (unknown owner).
+    stop_loss_order_id: str = ""
+    take_profit_order_id: str = ""

@@ -37,6 +37,21 @@ class BrokerPosition:
 
 
 @dataclass(frozen=True)
+class BracketOrderIds:
+    """IDs returned when a bracket order is submitted.
+
+    Parent is the market BUY. Stop-loss / take-profit are the OCO child legs
+    that become independent orders once the parent fills. The engine tracks
+    these on the Position so a per-strategy SELL can cancel its specific
+    children without liquidating another strategy's shares on the same symbol.
+    """
+
+    parent_order_id: str
+    stop_loss_order_id: str
+    take_profit_order_id: str
+
+
+@dataclass(frozen=True)
 class BrokerOrder:
     id: str
     symbol: str

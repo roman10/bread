@@ -71,13 +71,21 @@ class TestAlpacaBroker:
     ) -> None:
         config = _make_config(monkeypatch)
         mock_client = mock_client_cls.return_value
-        mock_order = SimpleNamespace(id="order-abc-123")
+        mock_order = SimpleNamespace(
+            id="order-abc-123",
+            legs=[
+                SimpleNamespace(id="leg-stop", type="stop"),
+                SimpleNamespace(id="leg-tp", type="limit"),
+            ],
+        )
         mock_client.submit_order.return_value = mock_order
 
         broker = AlpacaBroker(config)
-        order_id = broker.submit_bracket_order("SPY", 10, 475.0, 525.0)
+        result = broker.submit_bracket_order("SPY", 10, 475.0, 525.0)
 
-        assert order_id == "order-abc-123"
+        assert result.parent_order_id == "order-abc-123"
+        assert result.stop_loss_order_id == "leg-stop"
+        assert result.take_profit_order_id == "leg-tp"
         call_args = mock_client.submit_order.call_args[0][0]
         assert call_args.symbol == "SPY"
         assert call_args.qty == 10

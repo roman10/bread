@@ -15,7 +15,13 @@ from bread.core.config import CONFIG_DIR
 from bread.dashboard.components import format_local_dt
 from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
-from bread.db.models import EventAlertLog, OrderLog, PortfolioSnapshot, SignalLog
+from bread.db.models import (
+    EventAlertLog,
+    OrderLog,
+    PortfolioSnapshot,
+    SignalLog,
+    StrategySnapshot,
+)
 from bread.execution.alpaca_broker import AlpacaBroker
 from bread.monitoring.journal import (
     get_all_strategies_summary,
@@ -270,6 +276,33 @@ class DashboardData:
             }
             for s in summaries
         ]
+
+    def get_strategy_equity_curves(
+        self,
+        days: int = 90,
+    ) -> dict[str, list[tuple[datetime, float]]]:
+        """Return {strategy_name: [(timestamp, equity_delta), ...]} for the window.
+
+        Equity here is realized + unrealized P&L (delta from a notional zero
+        baseline) — what the per-strategy curves on the /strategies page
+        plot. Enables side-by-side strategy comparison over time without
+        having to reconstruct the curves from OrderLog at read time.
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        with self._sf() as session:
+            rows = (
+                session.execute(
+                    select(StrategySnapshot)
+                    .where(StrategySnapshot.timestamp_utc >= cutoff)
+                    .order_by(StrategySnapshot.timestamp_utc.asc())
+                )
+                .scalars()
+                .all()
+            )
+        curves: dict[str, list[tuple[datetime, float]]] = {}
+        for r in rows:
+            curves.setdefault(r.strategy_name, []).append((r.timestamp_utc, r.equity))
+        return curves
 
     def get_open_positions(
         self,
