@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,10 +11,11 @@ from sqlalchemy.orm import sessionmaker
 
 from bread.ai.models import SignalReview
 from bread.core.exceptions import OrderError
-from bread.core.models import Position, Signal, SignalDirection
+from bread.core.models import OrderSide, OrderStatus, Position, Signal, SignalDirection
 from bread.db.database import init_db
 from bread.db.models import OrderLog, PortfolioSnapshot
 from bread.execution.engine import ExecutionEngine
+from bread.execution.models import Account, BrokerOrder, BrokerPosition
 from bread.risk.validators import ValidationResult
 
 
@@ -51,16 +51,59 @@ def _make_position(symbol: str = "QQQ") -> Position:
 
 
 def _mock_account(
-    equity: str = "10000",
-    buying_power: str = "8000",
-    cash: str = "8000",
-    last_equity: str = "9900",
-) -> SimpleNamespace:
-    return SimpleNamespace(
+    equity: float = 10000.0,
+    buying_power: float = 8000.0,
+    cash: float = 8000.0,
+    last_equity: float = 9900.0,
+) -> Account:
+    return Account(
         equity=equity,
         buying_power=buying_power,
         cash=cash,
         last_equity=last_equity,
+        created_at=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+
+
+def _broker_position(
+    symbol: str,
+    qty: float = 0.0,
+    avg_entry_price: float = 0.0,
+    current_price: float | None = None,
+) -> BrokerPosition:
+    cp = current_price if current_price is not None else avg_entry_price
+    return BrokerPosition(
+        symbol=symbol,
+        qty=qty,
+        avg_entry_price=avg_entry_price,
+        current_price=cp,
+        market_value=cp * qty,
+        unrealized_pl=0.0,
+        unrealized_plpc=0.0,
+    )
+
+
+def _broker_order(
+    id: str = "order-1",
+    symbol: str = "SPY",
+    status: OrderStatus | None = OrderStatus.PENDING,
+    side: OrderSide | None = OrderSide.BUY,
+    qty: float = 0.0,
+    filled_avg_price: float | None = None,
+    filled_at: datetime | None = None,
+) -> BrokerOrder:
+    return BrokerOrder(
+        id=id,
+        symbol=symbol,
+        side=side,
+        status=status,
+        qty=qty,
+        filled_qty=qty if filled_avg_price is not None else 0.0,
+        filled_avg_price=filled_avg_price,
+        submitted_at=None,
+        created_at=None,
+        filled_at=filled_at,
+        order_type="market",
     )
 
 
@@ -97,7 +140,7 @@ class TestReconcile:
     def test_adds_untracked_broker_position(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
         mock_broker.get_positions.return_value = [
-            SimpleNamespace(symbol="SPY", qty="5", avg_entry_price="500.0"),
+            _broker_position("SPY", qty=5.0, avg_entry_price=500.0),
         ]
 
         engine.reconcile()
@@ -122,7 +165,7 @@ class TestReconcile:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
         engine._positions["SPY"] = _make_position("SPY")
         mock_broker.get_positions.return_value = [
-            SimpleNamespace(symbol="SPY", qty="10", avg_entry_price="100.0"),
+            _broker_position("SPY", qty=10.0, avg_entry_price=100.0),
         ]
 
         engine.reconcile()
@@ -197,7 +240,7 @@ class TestProcessSignals:
     def test_buy_pending_order_skipped(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(symbol="SPY"),
+            _broker_order(id="o-pending", symbol="SPY"),
         ]
 
         signals = [_make_signal("SPY", SignalDirection.BUY)]
@@ -350,22 +393,14 @@ class TestReconcileOrders:
     def test_status_stored_as_clean_enum_value_not_class_prefixed(
         self, monkeypatch
     ) -> None:
-        """Regression for Bug 1: Alpaca's OrderStatus is `str, Enum`, so
-        `str(enum)` returns 'OrderStatus.FILLED' rather than 'filled'. Prior
-        code stored 'ORDERSTATUS.FILLED' in the DB, which broke the journal
-        query and the fill-capture branch. Reconcile must normalize to our
-        canonical OrderStatus values ('FILLED', 'CANCELLED', ...).
+        """The engine must persist OrderStatus.value (e.g. 'FILLED') in the DB.
+
+        The original bug — storing 'ORDERSTATUS.FILLED' from Alpaca's
+        `str, Enum` — is now structurally impossible because the broker
+        layer normalizes status into our OrderStatus enum before the engine
+        sees it. See test_alpaca_broker::TestNormalizeAlpacaStatus for the
+        normalization regression itself; this test pins the engine half.
         """
-        from enum import Enum
-
-        # `str, Enum` (not StrEnum) is intentional — StrEnum's str() returns
-        # the value; `str, Enum`'s returns the class-prefixed name. That's
-        # precisely the Alpaca SDK shape that produced the original bug.
-        class FakeAlpacaStatus(str, Enum):  # noqa: UP042
-            FILLED = "filled"
-
-        assert str(FakeAlpacaStatus.FILLED) == "FakeAlpacaStatus.FILLED"  # shape of the bug
-
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         now = datetime.now(UTC)
         with sf() as session:
@@ -384,10 +419,10 @@ class TestReconcileOrders:
             session.commit()
 
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
+            _broker_order(
                 id="order-regression",
-                status=FakeAlpacaStatus.FILLED,  # the buggy shape
-                filled_avg_price="500.0",
+                status=OrderStatus.FILLED,
+                filled_avg_price=500.0,
                 filled_at=now + timedelta(minutes=1),
             ),
         ]
@@ -423,12 +458,7 @@ class TestReconcileOrders:
             session.commit()
 
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
-                id="order-xyz",
-                status="some_new_unrecognized_state",
-                filled_avg_price=None,
-                filled_at=None,
-            ),
+            _broker_order(id="order-xyz", status=None),
         ]
 
         engine._reconcile_orders()
@@ -460,10 +490,10 @@ class TestReconcileOrders:
         # Broker says it's filled
         fill_time = now + timedelta(minutes=5)
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
+            _broker_order(
                 id="order-1",
-                status="filled",
-                filled_avg_price="502.50",
+                status=OrderStatus.FILLED,
+                filled_avg_price=502.50,
                 filled_at=fill_time,
             ),
         ]
@@ -499,12 +529,7 @@ class TestReconcileOrders:
             session.commit()
 
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
-                id="order-2",
-                status="canceled",  # Alpaca spelling (single L)
-                filled_avg_price=None,
-                filled_at=None,
-            ),
+            _broker_order(id="order-2", status=OrderStatus.CANCELLED),
         ]
 
         engine._reconcile_orders()
@@ -716,10 +741,10 @@ class TestPaperCostAdjustment:
             session.commit()
 
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
+            _broker_order(
                 id="order-buy",
-                status="filled",
-                filled_avg_price="500.00",
+                status=OrderStatus.FILLED,
+                filled_avg_price=500.00,
                 filled_at=now,
             ),
         ]
@@ -751,10 +776,10 @@ class TestPaperCostAdjustment:
             session.commit()
 
         mock_broker.get_orders.return_value = [
-            SimpleNamespace(
+            _broker_order(
                 id="order-sell",
-                status="filled",
-                filled_avg_price="510.00",
+                status=OrderStatus.FILLED,
+                filled_avg_price=510.00,
                 filled_at=now,
             ),
         ]

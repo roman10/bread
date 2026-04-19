@@ -229,10 +229,14 @@ class TestJournal:
 class TestStatusEnhanced:
     @pytest.mark.usefixtures("_config_env")
     def test_status_shows_risk_section(self) -> None:
+        from datetime import UTC, datetime
+
+        from bread.execution.models import Account
+
         mock_broker = MagicMock()
-        mock_broker.get_account.return_value = MagicMock(
-            equity="10000", cash="8000", buying_power="8000",
-            last_equity="9900",
+        mock_broker.get_account.return_value = Account(
+            equity=10000.0, cash=8000.0, buying_power=8000.0,
+            last_equity=9900.0, created_at=datetime(2024, 1, 1, tzinfo=UTC),
         )
         mock_broker.get_positions.return_value = []
         mock_broker.get_orders.return_value = []
@@ -248,18 +252,26 @@ class TestStatusEnhanced:
 
     @pytest.mark.usefixtures("_config_env")
     def test_status_shows_open_orders(self) -> None:
+        from datetime import UTC, datetime
+
+        from bread.core.models import OrderSide, OrderStatus
+        from bread.execution.models import Account, BrokerOrder
+
         mock_broker = MagicMock()
-        mock_broker.get_account.return_value = MagicMock(
-            equity="10000", cash="8000", buying_power="8000",
-            last_equity="9900",
+        mock_broker.get_account.return_value = Account(
+            equity=10000.0, cash=8000.0, buying_power=8000.0,
+            last_equity=9900.0, created_at=datetime(2024, 1, 1, tzinfo=UTC),
         )
         mock_broker.get_positions.return_value = []
-        mock_order = MagicMock()
-        mock_order.symbol = "SPY"
-        mock_order.side = "buy"
-        mock_order.qty = 5
-        mock_order.status = "accepted"
-        mock_broker.get_orders.return_value = [mock_order]
+        mock_broker.get_orders.return_value = [
+            BrokerOrder(
+                id="o-1", symbol="SPY",
+                side=OrderSide.BUY, status=OrderStatus.ACCEPTED,
+                qty=5.0, filled_qty=0.0, filled_avg_price=None,
+                submitted_at=None, created_at=None, filled_at=None,
+                order_type="market",
+            )
+        ]
 
         with patch(
             "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
@@ -521,21 +533,32 @@ class TestBackfillOrders:
         qty: int = 10,
         status: str = "filled",
         filled_avg_price: str = "500.0",
-    ) -> MagicMock:
+    ):
+        """Build a normalized BrokerOrder shaped like a backfilled Alpaca order."""
         from datetime import UTC, datetime
 
-        o = MagicMock()
-        o.id = order_id
-        o.symbol = symbol
-        o.side = side
-        o.qty = qty
-        o.filled_qty = qty
-        o.status = status
-        o.filled_avg_price = filled_avg_price
-        o.submitted_at = datetime(2026, 3, 15, 13, 30, tzinfo=UTC)
-        o.created_at = datetime(2026, 3, 15, 13, 29, tzinfo=UTC)
-        o.filled_at = datetime(2026, 3, 15, 13, 31, tzinfo=UTC)
-        return o
+        from bread.core.models import OrderSide, OrderStatus
+        from bread.execution.models import BrokerOrder
+
+        status_map = {
+            "filled": OrderStatus.FILLED,
+            "canceled": OrderStatus.CANCELLED,
+            "rejected": OrderStatus.REJECTED,
+        }
+        side_map = {"buy": OrderSide.BUY, "sell": OrderSide.SELL}
+        return BrokerOrder(
+            id=order_id,
+            symbol=symbol,
+            side=side_map.get(side.lower()),
+            status=status_map.get(status.lower()),
+            qty=float(qty),
+            filled_qty=float(qty),
+            filled_avg_price=float(filled_avg_price),
+            submitted_at=datetime(2026, 3, 15, 13, 30, tzinfo=UTC),
+            created_at=datetime(2026, 3, 15, 13, 29, tzinfo=UTC),
+            filled_at=datetime(2026, 3, 15, 13, 31, tzinfo=UTC),
+            order_type="market",
+        )
 
     def _seed_existing(self, tmp_path: Path, broker_order_id: str) -> None:
         """Put one row in the local DB so we can test idempotency."""

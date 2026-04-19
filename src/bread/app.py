@@ -341,8 +341,8 @@ class TradingApp:
             from bread.monitoring.journal import get_journal
 
             account = self._engine.get_account()
-            equity = float(account.equity or 0)  # type: ignore[attr-defined]
-            last_equity = float(account.last_equity or equity)  # type: ignore[attr-defined]
+            equity = account.equity
+            last_equity = account.last_equity or equity
             daily_pnl = equity - last_equity
             daily_pct = (daily_pnl / last_equity * 100) if last_equity > 0 else 0.0
 

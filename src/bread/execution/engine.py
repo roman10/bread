@@ -11,7 +11,6 @@ from sqlalchemy import select
 from bread.core.exceptions import OrderError
 from bread.core.models import OrderSide, OrderStatus, Position, SignalDirection
 from bread.db.models import OrderLog, PortfolioSnapshot
-from bread.execution.alpaca_broker import normalize_alpaca_status
 from bread.risk.context import RiskContext, RiskContextRepo
 from bread.risk.limits import check_bracket_prices
 
@@ -22,7 +21,8 @@ if TYPE_CHECKING:
     from bread.ai.models import SignalReview
     from bread.core.config import AppConfig
     from bread.core.models import Signal
-    from bread.execution.alpaca_broker import AlpacaBroker
+    from bread.execution.broker import Broker
+    from bread.execution.models import Account
     from bread.risk.manager import RiskManager
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ def adjust_fill_price(config: AppConfig, raw_price: float, side: str) -> float:
 class ExecutionEngine:
     def __init__(
         self,
-        broker: AlpacaBroker,
+        broker: Broker,
         risk_manager: RiskManager,
         config: AppConfig,
         session_factory: sessionmaker[Session],
@@ -92,8 +92,8 @@ class ExecutionEngine:
                 )
                 self._positions[symbol] = Position(
                     symbol=symbol,
-                    qty=int(float(bp.qty or 0)),
-                    entry_price=float(bp.avg_entry_price or 0),
+                    qty=int(bp.qty),
+                    entry_price=bp.avg_entry_price,
                     stop_loss_price=0.0,
                     take_profit_price=0.0,
                     broker_order_id="",
@@ -134,7 +134,7 @@ class ExecutionEngine:
                     logger.exception("Failed to fetch orders for reconciliation")
                     return
 
-                broker_map = {str(o.id): o for o in broker_orders}
+                broker_map = {o.id: o for o in broker_orders}
 
                 for order in pending:
                     if not order.broker_order_id:
@@ -143,17 +143,18 @@ class ExecutionEngine:
                     if broker_order is None:
                         continue
 
-                    new_status = normalize_alpaca_status(broker_order.status)
-                    if new_status == "UNKNOWN":
-                        # Don't overwrite a valid prior status with garbage.
+                    if broker_order.status is None:
+                        # Don't overwrite a valid prior status with a value the
+                        # broker layer couldn't normalize.
                         continue
+                    new_status = broker_order.status.value
                     if new_status == order.status:
                         continue
 
                     order.status = new_status
                     if new_status == "FILLED":
                         if broker_order.filled_avg_price is not None:
-                            raw_price = float(broker_order.filled_avg_price)
+                            raw_price = broker_order.filled_avg_price
                             order.raw_filled_price = raw_price
                             # Apply paper trading cost model (slippage/spread).
                             # In live mode, adjust_fill_price returns raw_price unchanged.
@@ -246,9 +247,9 @@ class ExecutionEngine:
             logger.exception("Failed to fetch account, skipping signal processing")
             return
 
-        equity = float(account.equity or 0)
-        buying_power = float(account.buying_power or 0)
-        daily_pnl = equity - float(account.last_equity or equity)
+        equity = account.equity
+        buying_power = account.buying_power
+        daily_pnl = equity - (account.last_equity or equity)
 
         # Split signals
         sell_signals = [s for s in signals if s.direction == SignalDirection.SELL]
@@ -491,14 +492,13 @@ class ExecutionEngine:
         """Return current tracked positions."""
         return list(self._positions.values())
 
-    def get_account(self) -> object:
-        """Return the broker account object."""
+    def get_account(self) -> Account:
+        """Return the broker account snapshot."""
         return self._broker.get_account()
 
     def get_equity(self) -> float:
         """Return current account equity from broker."""
-        account = self._broker.get_account()
-        return float(account.equity or 0)
+        return self._broker.get_account().equity
 
     def _get_cumulative_cost_adjustment(self) -> float:
         """Total P&L impact of paper trading cost adjustments.
@@ -563,9 +563,9 @@ class ExecutionEngine:
         """
         try:
             account = self._broker.get_account()
-            equity = float(account.equity or 0)
-            cash = float(account.cash or 0)
-            daily_pnl = equity - float(account.last_equity or equity)
+            equity = account.equity
+            cash = account.cash
+            daily_pnl = equity - (account.last_equity or equity)
 
             # Adjust for paper trading cost model
             cost_adjustment = self._get_cumulative_cost_adjustment()

@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 
 from alpaca.common.enums import Sort
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import OrderClass, QueryOrderStatus, TimeInForce
+from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
 from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError, Timeout
@@ -23,6 +24,9 @@ from tenacity import (
 from urllib3.exceptions import ProtocolError
 
 from bread.core.exceptions import ExecutionError, OrderError
+from bread.core.models import OrderSide, OrderStatus
+from bread.execution.broker import Broker
+from bread.execution.models import Account, BrokerOrder, BrokerPosition
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -89,6 +93,76 @@ def normalize_alpaca_side(raw: object) -> str:
     return ""
 
 
+def _to_float(raw: object) -> float:
+    if raw is None:
+        return 0.0
+    return float(raw)  # type: ignore[arg-type]
+
+
+def _to_optional_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    return float(raw)  # type: ignore[arg-type]
+
+
+def _to_account(raw: TradeAccount) -> Account:
+    return Account(
+        equity=_to_float(getattr(raw, "equity", None)),
+        buying_power=_to_float(getattr(raw, "buying_power", None)),
+        cash=_to_float(getattr(raw, "cash", None)),
+        last_equity=_to_float(getattr(raw, "last_equity", None)),
+        created_at=getattr(raw, "created_at", None),
+    )
+
+
+def _to_broker_position(raw: AlpacaPosition) -> BrokerPosition:
+    return BrokerPosition(
+        symbol=str(raw.symbol),
+        qty=_to_float(getattr(raw, "qty", None)),
+        avg_entry_price=_to_float(getattr(raw, "avg_entry_price", None)),
+        current_price=_to_float(getattr(raw, "current_price", None)),
+        market_value=_to_float(getattr(raw, "market_value", None)),
+        unrealized_pl=_to_float(getattr(raw, "unrealized_pl", None)),
+        unrealized_plpc=_to_float(getattr(raw, "unrealized_plpc", None)),
+    )
+
+
+def _to_broker_order(raw: AlpacaOrder) -> BrokerOrder:
+    side_token = normalize_alpaca_side(getattr(raw, "side", None))
+    side: OrderSide | None = (
+        OrderSide(side_token) if side_token in ("BUY", "SELL") else None
+    )
+    status_token = normalize_alpaca_status(getattr(raw, "status", None))
+    status: OrderStatus | None
+    try:
+        status = OrderStatus(status_token)
+    except ValueError:
+        status = None
+    qty_raw = getattr(raw, "qty", None)
+    filled_qty_raw = getattr(raw, "filled_qty", None)
+    qty = _to_float(qty_raw if qty_raw is not None else filled_qty_raw)
+    filled_qty = _to_float(filled_qty_raw)
+    order_type_raw = getattr(raw, "type", None)
+    order_type = (
+        str(getattr(order_type_raw, "value", order_type_raw)).lower()
+        if order_type_raw is not None
+        else None
+    )
+    return BrokerOrder(
+        id=str(raw.id),
+        symbol=str(getattr(raw, "symbol", "") or ""),
+        side=side,
+        status=status,
+        qty=qty,
+        filled_qty=filled_qty,
+        filled_avg_price=_to_optional_float(getattr(raw, "filled_avg_price", None)),
+        submitted_at=getattr(raw, "submitted_at", None),
+        created_at=getattr(raw, "created_at", None),
+        filled_at=getattr(raw, "filled_at", None),
+        order_type=order_type,
+    )
+
+
 _read_retrier = Retrying(
     retry=retry_if_exception_type((ConnectionError, Timeout, ProtocolError)),
     stop=stop_after_attempt(3),
@@ -112,7 +186,7 @@ _close_retrier = Retrying(
 )
 
 
-class AlpacaBroker:
+class AlpacaBroker(Broker):
     """Wraps alpaca-py TradingClient. Paper/live controlled by config.mode."""
 
     def __init__(self, config: AppConfig) -> None:
@@ -134,29 +208,27 @@ class AlpacaBroker:
         adapter = HTTPAdapter(pool_maxsize=20)
         self._client._session.mount("https://", adapter)
 
-    def get_account(self) -> TradeAccount:
-        """Fetch account info (equity, buying_power, cash, last_equity)."""
+    def get_account(self) -> Account:
         try:
-            return _read_retrier(self._client.get_account)  # type: ignore[return-value]
+            raw = _read_retrier(self._client.get_account)
         except Exception as exc:
             raise ExecutionError(f"Failed to get account: {exc}") from exc
+        return _to_account(raw)  # type: ignore[arg-type]
 
-    def get_positions(self) -> list[AlpacaPosition]:
-        """Fetch all open positions from Alpaca."""
+    def get_positions(self) -> list[BrokerPosition]:
         try:
-            return _read_retrier(self._client.get_all_positions)  # type: ignore[arg-type]
+            raw = _read_retrier(self._client.get_all_positions)
         except Exception as exc:
             raise ExecutionError(f"Failed to get positions: {exc}") from exc
+        return [_to_broker_position(p) for p in raw]  # type: ignore[arg-type]
 
-    def get_orders(self, status: str = "open") -> list[AlpacaOrder]:
-        """Fetch orders by status."""
+    def get_orders(self, status: str = "open") -> list[BrokerOrder]:
         try:
             request = GetOrdersRequest(status=QueryOrderStatus(status))
-            return _read_retrier(
-                self._client.get_orders, filter=request  # type: ignore[arg-type]
-            )
+            raw = _read_retrier(self._client.get_orders, filter=request)
         except Exception as exc:
             raise ExecutionError(f"Failed to get orders: {exc}") from exc
+        return [_to_broker_order(o) for o in raw]  # type: ignore[arg-type]
 
     def list_historical_orders(
         self,
@@ -165,7 +237,7 @@ class AlpacaBroker:
         until: datetime | None = None,
         status: str = "closed",
         page_size: int = 500,
-    ) -> list[AlpacaOrder]:
+    ) -> list[BrokerOrder]:
         """Return orders in [after, until), deduped, paginated newest-first.
 
         Alpaca caps a single /v2/orders response at 500 rows. We page by
@@ -221,26 +293,26 @@ class AlpacaBroker:
                 break
             cursor = oldest
 
-        return list(collected.values())
+        return [_to_broker_order(o) for o in collected.values()]
 
     def get_account_created_at(self) -> datetime:
-        """Return the Alpaca account creation timestamp (UTC)."""
-        acct = self.get_account()
-        created: datetime | None = getattr(acct, "created_at", None)
+        created = self.get_account().created_at
         if created is None:
             raise ExecutionError("Alpaca account response missing created_at")
         return created
 
-    def get_order_by_id(self, order_id: str) -> AlpacaOrder | None:
+    def get_order_by_id(self, order_id: str) -> BrokerOrder | None:
         """Fetch a single order by its Alpaca order ID. Returns None if not found."""
         try:
             result = _read_retrier(self._client.get_order_by_id, order_id=order_id)
-            return result  # type: ignore[return-value]
         except Exception as exc:
             msg = str(exc).lower()
             if "not found" in msg or "404" in msg:
                 return None
             raise ExecutionError(f"Failed to get order {order_id}: {exc}") from exc
+        if result is None:
+            return None
+        return _to_broker_order(result)  # type: ignore[arg-type]
 
     def submit_bracket_order(
         self,
@@ -271,7 +343,7 @@ class AlpacaBroker:
             request = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
-                side=OrderSide.BUY,
+                side=AlpacaOrderSide.BUY,
                 time_in_force=TimeInForce.DAY,
                 order_class=OrderClass.BRACKET,
                 take_profit={"limit_price": round(take_profit_price, 2)},

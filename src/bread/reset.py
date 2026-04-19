@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
     from bread.core.config import AppConfig
-    from bread.execution.alpaca_broker import AlpacaBroker
+    from bread.execution.broker import Broker
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class ResetReport:
 
 def reset_environment(
     config: AppConfig,
-    broker: AlpacaBroker | None,
+    broker: Broker | None,
     engine: Engine,
 ) -> ResetReport:
     """Reset the paper environment.

@@ -241,17 +241,20 @@ class TestDashboardDataLive:
 
     def test_get_positions_maps_fields(self):
         from bread.dashboard.data import DashboardData
+        from bread.execution.models import BrokerPosition
 
         mock_broker = MagicMock()
-        mock_pos = MagicMock()
-        mock_pos.symbol = "SPY"
-        mock_pos.qty = "10"
-        mock_pos.avg_entry_price = "450.00"
-        mock_pos.current_price = "455.00"
-        mock_pos.unrealized_pl = "50.00"
-        mock_pos.unrealized_plpc = "0.0111"
-        mock_pos.market_value = "4550.00"
-        mock_broker.get_positions.return_value = [mock_pos]
+        mock_broker.get_positions.return_value = [
+            BrokerPosition(
+                symbol="SPY",
+                qty=10.0,
+                avg_entry_price=450.00,
+                current_price=455.00,
+                market_value=4550.00,
+                unrealized_pl=50.00,
+                unrealized_plpc=0.0111,
+            )
+        ]
 
         config = _make_config()
         with patch("bread.dashboard.data.AlpacaBroker", return_value=mock_broker), \
@@ -267,17 +270,26 @@ class TestDashboardDataLive:
         assert positions[0]["unrealized_pnl"] == 50.0
 
     def test_get_open_orders_maps_fields(self):
+        from bread.core.models import OrderSide, OrderStatus
         from bread.dashboard.data import DashboardData
+        from bread.execution.models import BrokerOrder
 
         mock_broker = MagicMock()
-        mock_order = MagicMock()
-        mock_order.symbol = "QQQ"
-        mock_order.side = "buy"
-        mock_order.qty = "5"
-        mock_order.status = "accepted"
-        mock_order.type = "market"
-        mock_order.submitted_at = datetime(2026, 3, 10, 10, 0, 0, tzinfo=UTC)
-        mock_broker.get_orders.return_value = [mock_order]
+        mock_broker.get_orders.return_value = [
+            BrokerOrder(
+                id="o-1",
+                symbol="QQQ",
+                side=OrderSide.BUY,
+                status=OrderStatus.ACCEPTED,
+                qty=5.0,
+                filled_qty=0.0,
+                filled_avg_price=None,
+                submitted_at=datetime(2026, 3, 10, 10, 0, 0, tzinfo=UTC),
+                created_at=None,
+                filled_at=None,
+                order_type="market",
+            )
+        ]
 
         config = _make_config()
         with patch("bread.dashboard.data.AlpacaBroker", return_value=mock_broker), \

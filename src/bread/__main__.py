@@ -464,10 +464,10 @@ def status_cmd() -> None:
         account = broker.get_account()
         positions = broker.get_positions()
 
-        equity = float(account.equity or 0)
-        cash = float(account.cash or 0)
-        buying_power = float(account.buying_power or 0)
-        last_equity = float(account.last_equity or equity)
+        equity = account.equity
+        cash = account.cash
+        buying_power = account.buying_power
+        last_equity = account.last_equity or equity
         daily_pnl = equity - last_equity
         daily_pct = (daily_pnl / last_equity * 100) if last_equity > 0 else 0.0
 
@@ -502,17 +502,13 @@ def status_cmd() -> None:
         if positions:
             typer.echo(f"\nOpen Positions ({len(positions)}):")
             for pos in positions:
-                sym = pos.symbol
-                qty = int(float(pos.qty or 0))
-                entry = float(pos.avg_entry_price or 0)
-                current = float(pos.current_price or 0)
-                unrealized = float(pos.unrealized_pl or 0)
-                pct = float(pos.unrealized_plpc or 0) * 100
-                sign_p = "+" if unrealized >= 0 else ""
+                sign_p = "+" if pos.unrealized_pl >= 0 else ""
                 typer.echo(
-                    f"  {sym:<5} qty={qty}  entry=${entry:,.2f}  "
-                    f"current=${current:,.2f}  P&L={sign_p}${unrealized:,.2f} "
-                    f"({sign_p}{pct:.1f}%)"
+                    f"  {pos.symbol:<5} qty={int(pos.qty)}  "
+                    f"entry=${pos.avg_entry_price:,.2f}  "
+                    f"current=${pos.current_price:,.2f}  "
+                    f"P&L={sign_p}${pos.unrealized_pl:,.2f} "
+                    f"({sign_p}{pos.unrealized_plpc * 100:.1f}%)"
                 )
         else:
             typer.echo("\nNo open positions")
@@ -546,17 +542,13 @@ def status_cmd() -> None:
         try:
             open_orders = broker.get_orders(status="open")
             if open_orders:
-                from bread.execution.alpaca_broker import (
-                    normalize_alpaca_side,
-                    normalize_alpaca_status,
-                )
                 typer.echo(f"\nOpen Orders ({len(open_orders)}):")
                 for o in open_orders:
-                    sym = str(o.symbol or "")
-                    side = normalize_alpaca_side(o.side)
-                    qty = int(float(o.qty or 0))
-                    status = normalize_alpaca_status(o.status)
-                    typer.echo(f"  {sym:<5} {side}  qty={qty}  status={status}")
+                    side = o.side.value if o.side else ""
+                    status = o.status.value if o.status else "UNKNOWN"
+                    typer.echo(
+                        f"  {o.symbol:<5} {side}  qty={int(o.qty)}  status={status}"
+                    )
             else:
                 typer.echo("\nNo open orders")
         except Exception:
@@ -730,11 +722,7 @@ def backfill_orders_cmd(
     from sqlalchemy import select
 
     from bread.db.models import OrderLog
-    from bread.execution.alpaca_broker import (
-        AlpacaBroker,
-        normalize_alpaca_side,
-        normalize_alpaca_status,
-    )
+    from bread.execution.alpaca_broker import AlpacaBroker
     from bread.execution.engine import adjust_fill_price
 
     try:
@@ -784,12 +772,11 @@ def backfill_orders_cmd(
             committed_since_last = 0
 
             for idx, o in enumerate(alpaca_orders, start=1):
-                status = normalize_alpaca_status(o.status)
-                if status != "FILLED":
+                if o.status is None or o.status.value != "FILLED":
                     skipped_non_filled += 1
                     continue
 
-                order_id = str(o.id)
+                order_id = o.id
                 if order_id in existing_ids:
                     skipped_duplicate += 1
                     continue
@@ -799,22 +786,20 @@ def backfill_orders_cmd(
                     continue
                 symbol = o.symbol
 
-                side = normalize_alpaca_side(o.side)
-                if side not in ("BUY", "SELL"):
+                if o.side is None:
                     # An unrecognized side would mis-apply paper slippage
                     # (adjust_fill_price treats anything != BUY as SELL).
                     logger.warning(
-                        "Skipping order %s %s with unrecognized side %r",
-                        order_id, symbol, o.side,
+                        "Skipping order %s %s with unrecognized side", order_id, symbol,
                     )
                     skipped_bad_side += 1
                     continue
+                side = o.side.value
 
-                raw_value = getattr(o, "filled_avg_price", None)
-                if raw_value is None:
+                if o.filled_avg_price is None:
                     skipped_no_price += 1
                     continue
-                raw = float(raw_value)
+                raw = o.filled_avg_price
                 if raw <= 0:
                     # A zero/negative fill price means Alpaca never populated
                     # the field; inserting it would break downstream P&L.
@@ -822,12 +807,12 @@ def backfill_orders_cmd(
                     continue
                 adjusted = adjust_fill_price(config, raw, side)
 
-                qty_raw = getattr(o, "qty", None)
-                qty_val = qty_raw if qty_raw is not None else getattr(o, "filled_qty", None)
-                if qty_val is None:
+                # qty on the DTO already falls back to filled_qty when raw
+                # qty is None; a 0 here means neither was populated.
+                qty_float = o.qty if o.qty else o.filled_qty
+                if qty_float <= 0:
                     skipped_no_qty += 1
                     continue
-                qty_float = float(qty_val)
                 if qty_float != int(qty_float):
                     # Bread only trades whole shares; a fractional fill implies
                     # either an external order or Alpaca data drift we don't

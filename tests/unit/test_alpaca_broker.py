@@ -33,7 +33,8 @@ class TestAlpacaBroker:
         broker = AlpacaBroker(config)
         account = broker.get_account()
 
-        assert account.equity == "10000"
+        assert account.equity == 10000.0
+        assert account.buying_power == 8000.0
         mock_client.get_account.assert_called_once()
 
     @patch("bread.execution.alpaca_broker._read_retrier.wait", new=lambda *a, **kw: 0)
@@ -49,7 +50,7 @@ class TestAlpacaBroker:
         broker = AlpacaBroker(config)
         account = broker.get_account()
 
-        assert account.equity == "10000"
+        assert account.equity == 10000.0
         assert mock_client.get_account.call_count == 2
 
     @patch("bread.execution.alpaca_broker.TradingClient")
@@ -92,6 +93,60 @@ class TestAlpacaBroker:
         broker = AlpacaBroker(config)
         with pytest.raises(OrderError, match="Failed to submit bracket order"):
             broker.submit_bracket_order("SPY", 10, 475.0, 525.0)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_cancel_all_orders_returns_count(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.cancel_orders.return_value = [
+            SimpleNamespace(id="1"),
+            SimpleNamespace(id="2"),
+            SimpleNamespace(id="3"),
+        ]
+
+        broker = AlpacaBroker(config)
+        assert broker.cancel_all_orders() == 3
+        mock_client.cancel_orders.assert_called_once_with()
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_cancel_all_orders_swallows_errors(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.cancel_orders.side_effect = Exception("boom")
+
+        broker = AlpacaBroker(config)
+        # Never raises — reset flows need this to be safe.
+        assert broker.cancel_all_orders() == 0
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_all_positions_returns_count(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.close_all_positions.return_value = [
+            SimpleNamespace(symbol="SPY"),
+            SimpleNamespace(symbol="QQQ"),
+        ]
+
+        broker = AlpacaBroker(config)
+        assert broker.close_all_positions() == 2
+        mock_client.close_all_positions.assert_called_once_with(cancel_orders=True)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_all_positions_swallows_errors(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.close_all_positions.side_effect = Exception("boom")
+
+        broker = AlpacaBroker(config)
+        assert broker.close_all_positions() == 0
 
     @patch("bread.execution.alpaca_broker.TradingClient")
     def test_close_position(
@@ -299,60 +354,6 @@ class TestAlpacaBroker:
 
         assert len(positions) == 1
         assert positions[0].symbol == "SPY"
-
-    @patch("bread.execution.alpaca_broker.TradingClient")
-    def test_cancel_all_orders_returns_count(
-        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = _make_config(monkeypatch)
-        mock_client = mock_client_cls.return_value
-        mock_client.cancel_orders.return_value = [MagicMock(), MagicMock(), MagicMock()]
-
-        broker = AlpacaBroker(config)
-        count = broker.cancel_all_orders()
-
-        assert count == 3
-        mock_client.cancel_orders.assert_called_once()
-
-    @patch("bread.execution.alpaca_broker.TradingClient")
-    def test_cancel_all_orders_swallows_errors(
-        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = _make_config(monkeypatch)
-        mock_client = mock_client_cls.return_value
-        mock_client.cancel_orders.side_effect = Exception("network error")
-
-        broker = AlpacaBroker(config)
-        count = broker.cancel_all_orders()
-
-        assert count == 0
-
-    @patch("bread.execution.alpaca_broker.TradingClient")
-    def test_close_all_positions_returns_count(
-        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = _make_config(monkeypatch)
-        mock_client = mock_client_cls.return_value
-        mock_client.close_all_positions.return_value = [MagicMock(), MagicMock()]
-
-        broker = AlpacaBroker(config)
-        count = broker.close_all_positions()
-
-        assert count == 2
-        mock_client.close_all_positions.assert_called_once_with(cancel_orders=True)
-
-    @patch("bread.execution.alpaca_broker.TradingClient")
-    def test_close_all_positions_swallows_errors(
-        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config = _make_config(monkeypatch)
-        mock_client = mock_client_cls.return_value
-        mock_client.close_all_positions.side_effect = Exception("timeout")
-
-        broker = AlpacaBroker(config)
-        count = broker.close_all_positions()
-
-        assert count == 0
 
 
 class TestNormalizeAlpacaStatus:
