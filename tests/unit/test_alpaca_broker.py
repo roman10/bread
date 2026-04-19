@@ -300,6 +300,60 @@ class TestAlpacaBroker:
         assert len(positions) == 1
         assert positions[0].symbol == "SPY"
 
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_cancel_all_orders_returns_count(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.cancel_orders.return_value = [MagicMock(), MagicMock(), MagicMock()]
+
+        broker = AlpacaBroker(config)
+        count = broker.cancel_all_orders()
+
+        assert count == 3
+        mock_client.cancel_orders.assert_called_once()
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_cancel_all_orders_swallows_errors(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.cancel_orders.side_effect = Exception("network error")
+
+        broker = AlpacaBroker(config)
+        count = broker.cancel_all_orders()
+
+        assert count == 0
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_all_positions_returns_count(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.close_all_positions.return_value = [MagicMock(), MagicMock()]
+
+        broker = AlpacaBroker(config)
+        count = broker.close_all_positions()
+
+        assert count == 2
+        mock_client.close_all_positions.assert_called_once_with(cancel_orders=True)
+
+    @patch("bread.execution.alpaca_broker.TradingClient")
+    def test_close_all_positions_swallows_errors(
+        self, mock_client_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = _make_config(monkeypatch)
+        mock_client = mock_client_cls.return_value
+        mock_client.close_all_positions.side_effect = Exception("timeout")
+
+        broker = AlpacaBroker(config)
+        count = broker.close_all_positions()
+
+        assert count == 0
+
 
 class TestNormalizeAlpacaStatus:
     """Regression for the ORDERSTATUS.FILLED bug.

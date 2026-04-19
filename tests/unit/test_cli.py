@@ -631,6 +631,25 @@ class TestBackfillOrders:
         engine.dispose()
 
     @pytest.mark.usefixtures("_config_env")
+    def test_skips_zero_fill_price(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(2026, 1, 1, tzinfo=UTC)
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1", filled_avg_price="0.0"),
+            self._make_alpaca_order(order_id="a2", filled_avg_price="500.0"),
+        ]
+
+        with patch("bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker):
+            result = runner.invoke(app, ["backfill-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "inserted:            1" in result.stdout
+        assert "skipped_no_price:    1" in result.stdout
+        assert self._count_orders(tmp_path) == 1
+
+    @pytest.mark.usefixtures("_config_env")
     def test_rejects_malformed_from(self) -> None:
         result = runner.invoke(app, ["backfill-orders", "--from", "not-a-date"])
         assert result.exit_code == 1

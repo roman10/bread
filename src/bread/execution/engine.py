@@ -260,8 +260,14 @@ class ExecutionEngine:
             if sig.symbol not in self._positions:
                 logger.debug("SELL signal for %s ignored — no position", sig.symbol)
                 continue
+            position = self._positions[sig.symbol]
+            if position.strategy_name != "unknown" and sig.strategy_name != position.strategy_name:
+                logger.debug(
+                    "SELL %s from '%s' ignored — position owned by '%s'",
+                    sig.symbol, sig.strategy_name, position.strategy_name,
+                )
+                continue
             try:
-                position = self._positions[sig.symbol]
                 order_id = self._broker.close_position(sig.symbol)
                 if order_id:
                     # Log SELL with the OPENER's strategy_name, not the exit

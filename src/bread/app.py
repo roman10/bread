@@ -228,10 +228,21 @@ class TradingApp:
 
             # 4. Evaluate strategies and persist signals
             all_signals: list[Signal] = []
+            # Build a per-strategy set of owned symbols once, so each strategy
+            # only sees its own positions when deciding whether to emit a SELL.
+            owned_by_strategy: dict[str, set[str]] = {}
+            for pos in self._engine.get_positions():
+                owned_by_strategy.setdefault(pos.strategy_name, set()).add(pos.symbol)
+
             for strategy in self._strategies:
                 signals: list[Signal] = []
                 try:
                     signals = strategy.evaluate(universe_data)
+                    owned = owned_by_strategy.get(strategy.name, set())
+                    signals = [
+                        s for s in signals
+                        if s.direction != SignalDirection.SELL or s.symbol in owned
+                    ]
                     all_signals.extend(signals)
                 except Exception:
                     logger.exception("Strategy %s evaluation failed", strategy.name)

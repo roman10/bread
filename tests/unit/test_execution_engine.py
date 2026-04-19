@@ -142,14 +142,12 @@ class TestProcessSignals:
         mock_broker.close_position.assert_called_once_with("SPY")
         assert "SPY" not in engine._positions
 
-    def test_sell_logs_opener_strategy_not_exit_signal_strategy(
+    def test_cross_strategy_sell_blocked_by_engine_guard(
         self, monkeypatch
     ) -> None:
-        """Regression for Bug 2: the SELL row's strategy_name must be the
-        strategy that OPENED the position, not the one that emitted the SELL.
-        Otherwise FIFO pair-matching would require both sides to share a name
-        which isn't true when one strategy holds positions that another's
-        exit rule closes.
+        """A SELL signal from a strategy that doesn't own the position must be
+        ignored. Strategy ownership is enforced at both app.py (primary) and
+        engine (defense-in-depth). This test covers the engine guard.
         """
         engine, mock_broker, _, sf = _make_engine(monkeypatch)
         opener_position = Position(
@@ -164,20 +162,20 @@ class TestProcessSignals:
         exit_signal = Signal(
             symbol="SPY", direction=SignalDirection.SELL,
             strength=0.8, stop_loss_pct=0.05,
-            strategy_name="bb_mean_reversion",  # different from opener
+            strategy_name="bb_mean_reversion",  # different from opener — must be blocked
             reason="rsi>70", timestamp=datetime.now(UTC),
         )
         engine.process_signals([exit_signal], {"SPY": 510.0})
+
+        mock_broker.close_position.assert_not_called()
+        assert "SPY" in engine._positions  # position untouched
 
         with sf() as session:
             sell_row = (
                 session.execute(select(OrderLog).where(OrderLog.side == "SELL"))
                 .scalars().first()
             )
-            assert sell_row is not None
-            assert sell_row.strategy_name == "ema_crossover"
-            # Reason still reflects the exit signal
-            assert sell_row.reason == "rsi>70"
+            assert sell_row is None  # no order logged
 
     def test_sell_without_position_ignored(self, monkeypatch) -> None:
         engine, mock_broker, _, _ = _make_engine(monkeypatch)
