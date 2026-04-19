@@ -11,7 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
-from bread.data.indicators import _fmt_stddev
+from bread.data.indicator_specs import ATR, RSI, BBUpper, MACDHist
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -46,24 +46,17 @@ class MacdDivergence(Strategy):
         self._bollinger_period: int = indicator_settings.bollinger_period
         self._bollinger_stddev: float = indicator_settings.bollinger_stddev
 
-        # Validate indicator compatibility
-        if self._rsi_period != indicator_settings.rsi_period:
-            raise StrategyError(
-                f"RSI period {self._rsi_period} != "
-                f"indicator setting {indicator_settings.rsi_period}"
-            )
+        rsi = RSI(self._rsi_period)
+        atr = ATR(self._atr_period)
+        bb_upper = BBUpper(self._bollinger_period, self._bollinger_stddev)
+        self._declare_indicators(
+            indicator_settings, rsi, atr, bb_upper, MACDHist(),
+            extras={"close"},
+        )
 
-        # Column names
-        self._col_rsi = f"rsi_{self._rsi_period}"
-        self._col_atr = f"atr_{self._atr_period}"
-        sdv = _fmt_stddev(self._bollinger_stddev)
-        bp = self._bollinger_period
-        self._col_bb_upper = f"bb_upper_{bp}_{sdv}"
-
-        self._required_cols = {
-            "close", self._col_rsi, self._col_atr, self._col_bb_upper,
-            "macd_hist",
-        }
+        self._col_rsi = rsi.column
+        self._col_atr = atr.column
+        self._col_bb_upper = bb_upper.column
 
     @property
     def name(self) -> str:

@@ -10,6 +10,18 @@ from typing import TYPE_CHECKING, ClassVar
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import ClaudeError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import (
+    ATR,
+    EMA,
+    RSI,
+    SMA,
+    BBLower,
+    BBMid,
+    BBUpper,
+    ReturnPct,
+    VolumeSMA,
+    fmt_stddev,
+)
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -19,11 +31,6 @@ if TYPE_CHECKING:
     from bread.ai.client import ClaudeClient
 
 logger = logging.getLogger(__name__)
-
-
-def _fmt_stddev(v: float) -> str:
-    """Format Bollinger Band stddev to match indicators.py column naming."""
-    return str(int(v)) if v == int(v) else str(v)
 
 
 @register("claude_analyst")
@@ -55,31 +62,33 @@ class ClaudeAnalyst(Strategy):
         self._claude = claude_client
         self._settings = indicator_settings
 
-        # Derive column names from indicator settings
-        self._col_atr = f"atr_{indicator_settings.atr_period}"
-        self._col_rsi = f"rsi_{indicator_settings.rsi_period}"
-        self._col_vol_sma = f"volume_sma_{indicator_settings.volume_sma_period}"
+        atr = ATR(indicator_settings.atr_period)
+        rsi = RSI(indicator_settings.rsi_period)
+        vol_sma = VolumeSMA(indicator_settings.volume_sma_period)
+        sma_specs = [SMA(p) for p in indicator_settings.sma_periods]
 
-        self._sma_cols = [f"sma_{p}" for p in indicator_settings.sma_periods]
-        self._ema_cols = [f"ema_{p}" for p in indicator_settings.ema_periods]
+        # Required columns — core set for summary generation. EMA, BB, MACD,
+        # and return columns are referenced opportunistically below (gated
+        # by `if col in df.columns`), so they are not in _required_cols.
+        self._declare_indicators(
+            indicator_settings, atr, rsi, vol_sma, *sma_specs,
+            extras={"close", "volume"},
+        )
 
-        sdv = _fmt_stddev(indicator_settings.bollinger_stddev)
-        bp = indicator_settings.bollinger_period
-        self._col_bb_lower = f"bb_lower_{bp}_{sdv}"
-        self._col_bb_mid = f"bb_mid_{bp}_{sdv}"
-        self._col_bb_upper = f"bb_upper_{bp}_{sdv}"
+        self._col_atr = atr.column
+        self._col_rsi = rsi.column
+        self._col_vol_sma = vol_sma.column
+        self._sma_cols = [s.column for s in sma_specs]
+        self._ema_cols = [EMA(p).column for p in indicator_settings.ema_periods]
 
-        self._return_cols = [f"return_{p}d" for p in indicator_settings.return_periods]
+        bp, sdv = indicator_settings.bollinger_period, indicator_settings.bollinger_stddev
+        self._col_bb_lower = BBLower(bp, sdv).column
+        self._col_bb_mid = BBMid(bp, sdv).column
+        self._col_bb_upper = BBUpper(bp, sdv).column
 
-        # Required columns — core set for summary generation
-        self._required_cols: set[str] = {
-            "close",
-            "volume",
-            self._col_atr,
-            self._col_rsi,
-            self._col_vol_sma,
-            *self._sma_cols,
-        }
+        self._return_cols = [
+            ReturnPct(p).column for p in indicator_settings.return_periods
+        ]
 
     @property
     def name(self) -> str:
@@ -230,7 +239,7 @@ class ClaudeAnalyst(Strategy):
             f"  EMA: {ema_str}\n"
             f"  MACD: {macd_str}\n"
             f"  BB({self._settings.bollinger_period},"
-            f"{_fmt_stddev(self._settings.bollinger_stddev)}): {bb_str}\n"
+            f"{fmt_stddev(self._settings.bollinger_stddev)}): {bb_str}\n"
             f"  Volume: {volume / 1e6:.1f}M vs {vol_sma / 1e6:.1f}M avg ({vol_ratio:.2f}x)"
         )
 

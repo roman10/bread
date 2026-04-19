@@ -11,7 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
-from bread.data.indicators import _fmt_stddev
+from bread.data.indicator_specs import ATR, RSI, BBLower, BBMid, BBUpper
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -44,40 +44,22 @@ class BbMeanReversion(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        if self._bollinger_period != indicator_settings.bollinger_period:
-            raise StrategyError(
-                f"Bollinger period {self._bollinger_period} != "
-                f"indicator setting {indicator_settings.bollinger_period}"
-            )
-        if self._bollinger_stddev != indicator_settings.bollinger_stddev:
-            raise StrategyError(
-                f"Bollinger stddev {self._bollinger_stddev} != "
-                f"indicator setting {indicator_settings.bollinger_stddev}"
-            )
-        if self._rsi_period != indicator_settings.rsi_period:
-            raise StrategyError(
-                f"RSI period {self._rsi_period} != "
-                f"indicator setting {indicator_settings.rsi_period}"
-            )
+        bp, sdv = self._bollinger_period, self._bollinger_stddev
+        bb_lower = BBLower(bp, sdv)
+        bb_mid = BBMid(bp, sdv)
+        bb_upper = BBUpper(bp, sdv)
+        rsi = RSI(self._rsi_period)
+        atr = ATR(self._atr_period)
+        self._declare_indicators(
+            indicator_settings, bb_lower, bb_mid, bb_upper, rsi, atr,
+            extras={"close"},
+        )
 
-        # Column names
-        sdv = _fmt_stddev(self._bollinger_stddev)
-        bp = self._bollinger_period
-        self._col_bb_lower = f"bb_lower_{bp}_{sdv}"
-        self._col_bb_mid = f"bb_mid_{bp}_{sdv}"
-        self._col_bb_upper = f"bb_upper_{bp}_{sdv}"
-        self._col_rsi = f"rsi_{self._rsi_period}"
-        self._col_atr = f"atr_{self._atr_period}"
-
-        self._required_cols = {
-            self._col_bb_lower,
-            self._col_bb_mid,
-            self._col_bb_upper,
-            self._col_rsi,
-            self._col_atr,
-            "close",
-        }
+        self._col_bb_lower = bb_lower.column
+        self._col_bb_mid = bb_mid.column
+        self._col_bb_upper = bb_upper.column
+        self._col_rsi = rsi.column
+        self._col_atr = atr.column
 
     @property
     def name(self) -> str:

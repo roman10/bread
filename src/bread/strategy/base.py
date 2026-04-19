@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pandas as pd
 import yaml
 
+from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal
+from bread.data.indicator_specs import IndicatorSpec
 
 
 def load_strategy_config(config_path: Path) -> dict[str, Any]:
@@ -72,6 +74,21 @@ class Strategy(ABC):
     def time_stop_days(self) -> int:
         """Number of trading bars to hold before a time-stop exit."""
         ...
+
+    def _declare_indicators(
+        self,
+        settings: IndicatorSettings,
+        *specs: IndicatorSpec,
+        extras: Iterable[str] = (),
+    ) -> None:
+        """Validate indicator specs against settings and populate _required_cols.
+
+        `extras` carries raw OHLCV columns the strategy reads
+        ("close", "open", "volume", ...).
+        """
+        for spec in specs:
+            spec.validate(settings)
+        self._required_cols = {s.column for s in specs} | set(extras)
 
     def _evaluate_universe(
         self,

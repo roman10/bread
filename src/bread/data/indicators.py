@@ -9,12 +9,23 @@ import pandas as pd
 
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import InsufficientHistoryError
+from bread.data.indicator_specs import (
+    ATR,
+    EMA,
+    RSI,
+    SMA,
+    BBLower,
+    BBMid,
+    BBUpper,
+    MACDHist,
+    MACDLine,
+    MACDSignal,
+    ReturnPct,
+    VolumeSMA,
+    specs_for_settings,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _fmt_stddev(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
 
 
 def _sma(series: pd.Series, length: int) -> pd.Series:
@@ -78,56 +89,44 @@ def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.Data
 
     result = df.copy()
 
-    # SMA
+    # Column names come from indicator_specs.py — single source of truth.
     for period in settings.sma_periods:
-        result[f"sma_{period}"] = _sma(result["close"], length=period)
+        result[SMA(period).column] = _sma(result["close"], length=period)
 
-    # EMA
     for period in settings.ema_periods:
-        result[f"ema_{period}"] = _ema(result["close"], length=period)
+        result[EMA(period).column] = _ema(result["close"], length=period)
 
-    # RSI
-    result[f"rsi_{settings.rsi_period}"] = _rsi(
+    result[RSI(settings.rsi_period).column] = _rsi(
         result["close"], length=settings.rsi_period
     )
 
-    # MACD
     macd_df = _macd(
         result["close"],
         fast=settings.macd_fast,
         slow=settings.macd_slow,
         signal=settings.macd_signal,
     )
-    result["macd"] = macd_df.iloc[:, 0]
-    result["macd_signal"] = macd_df.iloc[:, 1]
-    result["macd_hist"] = macd_df.iloc[:, 2]
+    result[MACDLine().column] = macd_df.iloc[:, 0]
+    result[MACDSignal().column] = macd_df.iloc[:, 1]
+    result[MACDHist().column] = macd_df.iloc[:, 2]
 
-    # ATR
-    result[f"atr_{settings.atr_period}"] = _atr(
+    result[ATR(settings.atr_period).column] = _atr(
         result["high"], result["low"], result["close"],
         length=settings.atr_period,
     )
 
-    # Bollinger Bands
-    sdv = _fmt_stddev(settings.bollinger_stddev)
-    bb_df = _bbands(
-        result["close"],
-        length=settings.bollinger_period,
-        std=settings.bollinger_stddev,
-    )
-    bp = settings.bollinger_period
-    result[f"bb_lower_{bp}_{sdv}"] = bb_df.iloc[:, 0]
-    result[f"bb_mid_{bp}_{sdv}"] = bb_df.iloc[:, 1]
-    result[f"bb_upper_{bp}_{sdv}"] = bb_df.iloc[:, 2]
+    bp, sdv = settings.bollinger_period, settings.bollinger_stddev
+    bb_df = _bbands(result["close"], length=bp, std=sdv)
+    result[BBLower(bp, sdv).column] = bb_df.iloc[:, 0]
+    result[BBMid(bp, sdv).column] = bb_df.iloc[:, 1]
+    result[BBUpper(bp, sdv).column] = bb_df.iloc[:, 2]
 
-    # Volume SMA
-    result[f"volume_sma_{settings.volume_sma_period}"] = _sma(
+    result[VolumeSMA(settings.volume_sma_period).column] = _sma(
         result["volume"].astype(float), length=settings.volume_sma_period
     )
 
-    # Return periods (percentage change over N days)
     for period in settings.return_periods:
-        result[f"return_{period}d"] = result["close"].pct_change(period)
+        result[ReturnPct(period).column] = result["close"].pct_change(period)
 
     # Determine indicator columns (everything except original OHLCV)
     ohlcv = {"open", "high", "low", "close", "volume"}
@@ -154,18 +153,4 @@ def compute_indicators(df: pd.DataFrame, settings: IndicatorSettings) -> pd.Data
 
 def get_indicator_columns(settings: IndicatorSettings) -> list[str]:
     """Return the list of indicator column names for the given settings."""
-    cols: list[str] = []
-    for p in settings.sma_periods:
-        cols.append(f"sma_{p}")
-    for p in settings.ema_periods:
-        cols.append(f"ema_{p}")
-    cols.append(f"rsi_{settings.rsi_period}")
-    cols.extend(["macd", "macd_signal", "macd_hist"])
-    cols.append(f"atr_{settings.atr_period}")
-    sdv = _fmt_stddev(settings.bollinger_stddev)
-    bp = settings.bollinger_period
-    cols.extend([f"bb_lower_{bp}_{sdv}", f"bb_mid_{bp}_{sdv}", f"bb_upper_{bp}_{sdv}"])
-    cols.append(f"volume_sma_{settings.volume_sma_period}")
-    for p in settings.return_periods:
-        cols.append(f"return_{p}d")
-    return cols
+    return [s.column for s in specs_for_settings(settings)]

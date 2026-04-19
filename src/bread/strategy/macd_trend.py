@@ -11,6 +11,14 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import (
+    ATR,
+    EMA,
+    MACDHist,
+    MACDLine,
+    MACDSignal,
+    VolumeSMA,
+)
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -43,30 +51,21 @@ class MacdTrend(Strategy):
         self._atr_period: int = indicator_settings.atr_period
         self._macd_warmup: int = indicator_settings.macd_slow + indicator_settings.macd_signal
 
-        # Validate indicator compatibility
-        if self._ema_trend_filter not in indicator_settings.ema_periods:
-            raise StrategyError(
-                f"EMA period {self._ema_trend_filter} not in "
-                f"indicator settings {indicator_settings.ema_periods}"
-            )
         if self._volume_mult < 1.0:
             raise StrategyError(f"volume_mult must be >= 1.0, got {self._volume_mult}")
-        if self._volume_sma_period != indicator_settings.volume_sma_period:
-            raise StrategyError(
-                f"Volume SMA period {self._volume_sma_period} != "
-                f"indicator setting {indicator_settings.volume_sma_period}"
-            )
 
-        # Column names
-        self._col_ema = f"ema_{self._ema_trend_filter}"
-        self._col_atr = f"atr_{self._atr_period}"
-        self._col_vol_sma = f"volume_sma_{self._volume_sma_period}"
+        ema = EMA(self._ema_trend_filter)
+        atr = ATR(self._atr_period)
+        vol_sma = VolumeSMA(self._volume_sma_period)
+        self._declare_indicators(
+            indicator_settings, ema, atr, vol_sma,
+            MACDLine(), MACDSignal(), MACDHist(),
+            extras={"close", "volume"},
+        )
 
-        self._required_cols = {
-            "close", "volume",
-            self._col_ema, self._col_atr, self._col_vol_sma,
-            "macd", "macd_signal", "macd_hist",
-        }
+        self._col_ema = ema.column
+        self._col_atr = atr.column
+        self._col_vol_sma = vol_sma.column
 
     @property
     def name(self) -> str:

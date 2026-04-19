@@ -11,6 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import ATR, RSI, SMA
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -43,27 +44,17 @@ class GapFade(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        if self._rsi_period != indicator_settings.rsi_period:
-            raise StrategyError(
-                f"RSI period {self._rsi_period} != "
-                f"indicator setting {indicator_settings.rsi_period}"
-            )
-        if self._sma_trend not in indicator_settings.sma_periods:
-            raise StrategyError(
-                f"SMA period {self._sma_trend} not in "
-                f"indicator settings {indicator_settings.sma_periods}"
-            )
+        rsi = RSI(self._rsi_period)
+        atr = ATR(self._atr_period)
+        sma_trend = SMA(self._sma_trend)
+        self._declare_indicators(
+            indicator_settings, rsi, atr, sma_trend,
+            extras={"open", "close"},
+        )
 
-        # Column names
-        self._col_rsi = f"rsi_{self._rsi_period}"
-        self._col_atr = f"atr_{self._atr_period}"
-        self._col_sma_trend = f"sma_{self._sma_trend}"
-
-        self._required_cols = {
-            "open", "close",
-            self._col_rsi, self._col_atr, self._col_sma_trend,
-        }
+        self._col_rsi = rsi.column
+        self._col_atr = atr.column
+        self._col_sma_trend = sma_trend.column
 
     @property
     def name(self) -> str:

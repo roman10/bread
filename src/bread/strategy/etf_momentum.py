@@ -11,6 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import ATR, RSI, SMA, VolumeSMA
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -46,38 +47,26 @@ class EtfMomentum(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        for sma in (self._sma_long, self._sma_fast, self._sma_mid):
-            if sma not in indicator_settings.sma_periods:
-                raise StrategyError(
-                    f"SMA period {sma} not in indicator settings {indicator_settings.sma_periods}"
-                )
-        if self._rsi_period != indicator_settings.rsi_period:
-            raise StrategyError(
-                f"RSI period {self._rsi_period} != "
-                f"indicator setting {indicator_settings.rsi_period}"
-            )
-        if self._volume_sma_period != indicator_settings.volume_sma_period:
-            raise StrategyError(
-                f"Volume SMA period {self._volume_sma_period} != "
-                f"indicator setting {indicator_settings.volume_sma_period}"
-            )
         if self._volume_mult < 1.0:
             raise StrategyError(f"volume_mult must be >= 1.0, got {self._volume_mult}")
 
-        # Column names
-        self._col_sma_long = f"sma_{self._sma_long}"
-        self._col_sma_fast = f"sma_{self._sma_fast}"
-        self._col_sma_mid = f"sma_{self._sma_mid}"
-        self._col_rsi = f"rsi_{self._rsi_period}"
-        self._col_atr = f"atr_{self._atr_period}"
-        self._col_vol_sma = f"volume_sma_{self._volume_sma_period}"
+        sma_long = SMA(self._sma_long)
+        sma_fast = SMA(self._sma_fast)
+        sma_mid = SMA(self._sma_mid)
+        rsi = RSI(self._rsi_period)
+        atr = ATR(self._atr_period)
+        vol_sma = VolumeSMA(self._volume_sma_period)
+        self._declare_indicators(
+            indicator_settings, sma_long, sma_fast, sma_mid, rsi, atr, vol_sma,
+            extras={"close", "volume"},
+        )
 
-        self._required_cols = {
-            self._col_sma_long, self._col_sma_fast, self._col_sma_mid,
-            self._col_rsi, self._col_atr, self._col_vol_sma,
-            "close", "volume",
-        }
+        self._col_sma_long = sma_long.column
+        self._col_sma_fast = sma_fast.column
+        self._col_sma_mid = sma_mid.column
+        self._col_rsi = rsi.column
+        self._col_atr = atr.column
+        self._col_vol_sma = vol_sma.column
 
     @property
     def name(self) -> str:

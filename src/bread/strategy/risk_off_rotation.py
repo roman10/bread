@@ -11,6 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import ATR, SMA, ReturnPct
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -51,29 +52,19 @@ class RiskOffRotation(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        if self._sma_trend not in indicator_settings.sma_periods:
-            raise StrategyError(
-                f"SMA period {self._sma_trend} not in "
-                f"indicator settings {indicator_settings.sma_periods}"
-            )
-        for period in (self._regime_return_period, self._momentum_return_period):
-            if period not in indicator_settings.return_periods:
-                raise StrategyError(
-                    f"Return period {period} not in "
-                    f"indicator settings {indicator_settings.return_periods}"
-                )
+        sma_trend = SMA(self._sma_trend)
+        atr = ATR(self._atr_period)
+        regime_return = ReturnPct(self._regime_return_period)
+        momentum_return = ReturnPct(self._momentum_return_period)
+        self._declare_indicators(
+            indicator_settings, sma_trend, atr, regime_return, momentum_return,
+            extras={"close"},
+        )
 
-        # Column names
-        self._col_sma_trend = f"sma_{self._sma_trend}"
-        self._col_atr = f"atr_{self._atr_period}"
-        self._col_regime_return = f"return_{self._regime_return_period}d"
-        self._col_momentum_return = f"return_{self._momentum_return_period}d"
-
-        self._required_cols = {
-            "close", self._col_sma_trend, self._col_atr,
-            self._col_regime_return, self._col_momentum_return,
-        }
+        self._col_sma_trend = sma_trend.column
+        self._col_atr = atr.column
+        self._col_regime_return = regime_return.column
+        self._col_momentum_return = momentum_return.column
 
     @property
     def name(self) -> str:

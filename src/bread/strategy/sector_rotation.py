@@ -11,6 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import ATR, SMA, ReturnPct
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -46,27 +47,17 @@ class SectorRotation(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        if self._sma_trend not in indicator_settings.sma_periods:
-            raise StrategyError(
-                f"SMA period {self._sma_trend} not in "
-                f"indicator settings {indicator_settings.sma_periods}"
-            )
-        for period in self._return_weights:
-            if period not in indicator_settings.return_periods:
-                raise StrategyError(
-                    f"Return period {period} not in "
-                    f"indicator settings {indicator_settings.return_periods}"
-                )
+        sma_trend = SMA(self._sma_trend)
+        atr = ATR(self._atr_period)
+        return_specs = {p: ReturnPct(p) for p in self._return_weights}
+        self._declare_indicators(
+            indicator_settings, sma_trend, atr, *return_specs.values(),
+            extras={"close"},
+        )
 
-        # Column names
-        self._col_sma_trend = f"sma_{self._sma_trend}"
-        self._col_atr = f"atr_{self._atr_period}"
-        self._return_cols = {p: f"return_{p}d" for p in self._return_weights}
-
-        self._required_cols = {
-            "close", self._col_sma_trend, self._col_atr,
-        } | set(self._return_cols.values())
+        self._col_sma_trend = sma_trend.column
+        self._col_atr = atr.column
+        self._return_cols = {p: spec.column for p, spec in return_specs.items()}
 
     @property
     def name(self) -> str:

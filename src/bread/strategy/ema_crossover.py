@@ -11,6 +11,7 @@ import pandas as pd
 from bread.core.config import IndicatorSettings
 from bread.core.exceptions import StrategyError
 from bread.core.models import Signal, SignalDirection
+from bread.data.indicator_specs import ATR, EMA, RSI, SMA
 from bread.strategy.base import Strategy, load_strategy_config
 from bread.strategy.registry import register
 
@@ -46,40 +47,21 @@ class EmaCrossover(Strategy):
 
         self._atr_period: int = indicator_settings.atr_period
 
-        # Validate indicator compatibility
-        if self._ema_fast not in indicator_settings.ema_periods:
-            raise StrategyError(
-                f"EMA period {self._ema_fast} not in "
-                f"indicator settings {indicator_settings.ema_periods}"
-            )
-        if self._ema_slow not in indicator_settings.ema_periods:
-            raise StrategyError(
-                f"EMA period {self._ema_slow} not in "
-                f"indicator settings {indicator_settings.ema_periods}"
-            )
-        if self._sma_trend not in indicator_settings.sma_periods:
-            raise StrategyError(
-                f"SMA period {self._sma_trend} not in "
-                f"indicator settings {indicator_settings.sma_periods}"
-            )
-        if self._rsi_period != indicator_settings.rsi_period:
-            raise StrategyError(
-                f"RSI period {self._rsi_period} != "
-                f"indicator setting {indicator_settings.rsi_period}"
-            )
+        ema_fast = EMA(self._ema_fast)
+        ema_slow = EMA(self._ema_slow)
+        sma_trend = SMA(self._sma_trend)
+        rsi = RSI(self._rsi_period)
+        atr = ATR(self._atr_period)
+        self._declare_indicators(
+            indicator_settings, ema_fast, ema_slow, sma_trend, rsi, atr,
+            extras={"close"},
+        )
 
-        # Column names
-        self._col_ema_fast = f"ema_{self._ema_fast}"
-        self._col_ema_slow = f"ema_{self._ema_slow}"
-        self._col_sma_trend = f"sma_{self._sma_trend}"
-        self._col_rsi = f"rsi_{self._rsi_period}"
-        self._col_atr = f"atr_{self._atr_period}"
-
-        self._required_cols = {
-            "close",
-            self._col_ema_fast, self._col_ema_slow,
-            self._col_sma_trend, self._col_rsi, self._col_atr,
-        }
+        self._col_ema_fast = ema_fast.column
+        self._col_ema_slow = ema_slow.column
+        self._col_sma_trend = sma_trend.column
+        self._col_rsi = rsi.column
+        self._col_atr = atr.column
 
     @property
     def name(self) -> str:
