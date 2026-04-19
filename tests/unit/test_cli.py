@@ -12,7 +12,8 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from bread.__main__ import _start_dashboard_thread, app
+from bread.cli import app
+from bread.cli._helpers import start_dashboard_thread
 
 runner = CliRunner()
 
@@ -151,7 +152,7 @@ class TestFetch:
         mock_provider = MagicMock()
         mock_provider.get_bars.return_value = _make_ohlcv(250)
 
-        with patch("bread.__main__.AlpacaDataProvider", return_value=mock_provider):
+        with patch("bread.cli.data.AlpacaDataProvider", return_value=mock_provider):
             result = runner.invoke(app, ["fetch", "SPY"])
 
         assert result.exit_code == 0
@@ -167,7 +168,7 @@ class TestFetch:
         mock_provider = MagicMock()
         mock_provider.get_bars.return_value = _make_ohlcv(250)
 
-        with patch("bread.__main__.AlpacaDataProvider", return_value=mock_provider):
+        with patch("bread.cli.data.AlpacaDataProvider", return_value=mock_provider):
             result = runner.invoke(app, ["fetch", "spy"])
 
         assert result.exit_code == 0
@@ -292,7 +293,7 @@ class TestRunCmd:
     @pytest.mark.usefixtures("_config_env")
     def test_dashboard_auto_starts_by_default(self) -> None:
         with (
-            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.cli.run.start_dashboard_thread") as mock_dash,
             patch("bread.app.run"),
         ):
             result = runner.invoke(app, ["run", "--mode", "paper"])
@@ -303,7 +304,7 @@ class TestRunCmd:
     @pytest.mark.usefixtures("_config_env")
     def test_no_dashboard_flag_skips_dashboard(self) -> None:
         with (
-            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.cli.run.start_dashboard_thread") as mock_dash,
             patch("bread.app.run"),
         ):
             result = runner.invoke(app, ["run", "--mode", "paper", "--no-dashboard"])
@@ -314,7 +315,7 @@ class TestRunCmd:
     @pytest.mark.usefixtures("_config_env")
     def test_custom_dashboard_port(self) -> None:
         with (
-            patch("bread.__main__._start_dashboard_thread") as mock_dash,
+            patch("bread.cli.run.start_dashboard_thread") as mock_dash,
             patch("bread.app.run"),
         ):
             result = runner.invoke(
@@ -334,9 +335,9 @@ class TestStartDashboardThread:
         output = StringIO()
         with (
             patch("bread.dashboard.app.create_app", return_value=mock_app),
-            patch("bread.__main__.typer.echo", side_effect=lambda m: output.write(m)),
+            patch("bread.cli._helpers.typer.echo", side_effect=lambda m: output.write(m)),
         ):
-            _start_dashboard_thread(8050)
+            start_dashboard_thread(8050)
 
         assert "http://localhost:8050" in output.getvalue()
 
@@ -346,10 +347,10 @@ class TestStartDashboardThread:
         mock_thread = MagicMock()
         with (
             patch("bread.dashboard.app.create_app", return_value=mock_app),
-            patch("bread.__main__.typer.echo"),
+            patch("bread.cli._helpers.typer.echo"),
             patch("threading.Thread", return_value=mock_thread) as mock_thread_cls,
         ):
-            _start_dashboard_thread(8050)
+            start_dashboard_thread(8050)
 
         mock_thread_cls.assert_called_once()
         assert mock_thread_cls.call_args == call(
@@ -362,7 +363,7 @@ class TestStartDashboardThread:
     def test_silently_skips_when_dash_not_installed(self) -> None:
         with patch.dict("sys.modules", {"bread.dashboard.app": None}):
             # Should not raise
-            _start_dashboard_thread(8050)
+            start_dashboard_thread(8050)
 
 
 class TestRepairOrders:
@@ -492,28 +493,28 @@ class TestBackfillOrdersHelpers:
     """Pure helpers — no CLI plumbing."""
 
     def test_infer_strategy_unique_symbol_wins(self) -> None:
-        from bread.__main__ import _infer_strategy_from_symbol
+        from bread.cli._helpers import infer_strategy_from_symbol
 
         universes = {"momentum": ["SPY", "QQQ"], "bonds": ["TLT"]}
-        assert _infer_strategy_from_symbol(universes, "TLT") == "bonds"
+        assert infer_strategy_from_symbol(universes, "TLT") == "bonds"
 
     def test_infer_strategy_ambiguous_falls_back_to_legacy(self) -> None:
-        from bread.__main__ import _infer_strategy_from_symbol
+        from bread.cli._helpers import infer_strategy_from_symbol
 
         universes = {"momentum": ["SPY"], "fade": ["SPY"]}
-        assert _infer_strategy_from_symbol(universes, "SPY") == "legacy"
+        assert infer_strategy_from_symbol(universes, "SPY") == "legacy"
 
     def test_infer_strategy_unknown_symbol_is_legacy(self) -> None:
-        from bread.__main__ import _infer_strategy_from_symbol
+        from bread.cli._helpers import infer_strategy_from_symbol
 
         universes = {"momentum": ["SPY"]}
-        assert _infer_strategy_from_symbol(universes, "XYZ") == "legacy"
+        assert infer_strategy_from_symbol(universes, "XYZ") == "legacy"
 
     def test_infer_strategy_case_insensitive(self) -> None:
-        from bread.__main__ import _infer_strategy_from_symbol
+        from bread.cli._helpers import infer_strategy_from_symbol
 
         universes = {"momentum": ["SPY"]}
-        assert _infer_strategy_from_symbol(universes, "spy") == "momentum"
+        assert infer_strategy_from_symbol(universes, "spy") == "momentum"
 
 
 class TestBackfillOrders:
