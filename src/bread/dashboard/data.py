@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from bread.core.config import AppConfig
     from bread.monitoring.journal import JournalEntry, OpenPosition
     from bread.monitoring.tracker import DailySummary
+    from bread.reset import ResetReport
 
 logger = logging.getLogger(__name__)
 
@@ -495,6 +496,11 @@ class DashboardData:
         except Exception:
             logger.exception("Failed to fetch recent events")
             return []
+
+    def run_reset(self) -> ResetReport:
+        """Soft-reset the paper env; preserves bar cache. Raises BreadError in live mode."""
+        from bread.reset import reset_environment
+        return reset_environment(self._config, self._broker, self._db_engine)
 
     def dispose(self) -> None:
         """Clean up database engine."""

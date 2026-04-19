@@ -69,6 +69,78 @@ class TestDbInit:
         assert (tmp_path / "test.db").exists()
 
 
+class TestReset:
+    @pytest.mark.usefixtures("_config_env")
+    def test_blocks_in_live_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BREAD_MODE", "live")
+        monkeypatch.setenv("ALPACA_LIVE_API_KEY", "pk-live")
+        monkeypatch.setenv("ALPACA_LIVE_SECRET_KEY", "sk-live")
+
+        result = runner.invoke(app, ["reset", "--yes", "--skip-broker"])
+        assert result.exit_code == 1
+        assert "paper-only" in result.stderr
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_reset_clears_trade_tables(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.database import init_db
+        from bread.db.models import OrderLog
+
+        db_path = str(tmp_path / "test.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        init_db(engine)
+        sf = sessionmaker(bind=engine)
+        now = datetime(2026, 4, 1, 15, 0, tzinfo=UTC)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id="b1", symbol="SPY", side="BUY", qty=10,
+                status="FILLED", filled_price=500.0, strategy_name="etf_momentum",
+                reason="seed", created_at_utc=now, filled_at_utc=now,
+            ))
+            session.commit()
+        engine.dispose()
+
+        result = runner.invoke(app, ["reset", "--yes", "--skip-broker"])
+
+        assert result.exit_code == 0, result.stdout + result.stderr
+        assert "Reset complete" in result.stdout
+        assert "Local orders deleted:     1" in result.stdout
+        assert "app.alpaca.markets" in result.stdout
+
+        engine = create_engine(f"sqlite:///{db_path}")
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            assert session.query(OrderLog).count() == 0
+        engine.dispose()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_reset_confirm_declined_aborts(self) -> None:
+        result = runner.invoke(app, ["reset"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.stdout
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_reset_invokes_broker_when_not_skipped(self) -> None:
+        mock_broker = MagicMock()
+        mock_broker.cancel_all_orders.return_value = 2
+        mock_broker.close_all_positions.return_value = 1
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 0, result.stdout + result.stderr
+        mock_broker.cancel_all_orders.assert_called_once()
+        mock_broker.close_all_positions.assert_called_once()
+        assert "Broker orders cancelled:  2" in result.stdout
+        assert "Broker positions closed:  1" in result.stdout
+
+
 class TestFetch:
     def test_fetch_requires_symbol(self) -> None:
         result = runner.invoke(app, ["fetch"])
