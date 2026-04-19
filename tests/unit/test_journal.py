@@ -303,7 +303,7 @@ class TestGetJournalSummary:
         assert summary["win_rate_pct"] == 50.0
         assert summary["avg_win"] == 200.0
         assert summary["avg_loss"] == -50.0
-        assert summary["total_pnl"] == 150.0
+        assert summary["realized_pnl"] == 150.0
         assert summary["best_trade"] == 200.0
         assert summary["worst_trade"] == -50.0
         assert summary["expectancy"] == 75.0  # 150/2
@@ -488,6 +488,26 @@ class TestGetOpenPositions:
             opens = get_open_positions(session, {})
 
         assert opens == []
+
+    def test_two_strategies_hold_same_symbol(self) -> None:
+        """Cross-strategy same-symbol holdings are the documented design
+        intent — each unmatched BUY must surface as its own OpenPosition
+        attributed to its opening strategy."""
+        sf = _make_sf()
+        t1 = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+        t2 = datetime(2026, 3, 1, 14, 0, tzinfo=UTC)
+        _fill(sf, "DIA", "BUY", 10, 400.0, t1, strategy="sector_rotation")
+        _fill(sf, "DIA", "BUY", 5, 402.0, t2, strategy="risk_off_rotation")
+
+        with sf() as session:
+            opens = get_open_positions(session, {"DIA": 410.0})
+
+        by_strat = {p.strategy_name: p for p in opens}
+        assert set(by_strat) == {"sector_rotation", "risk_off_rotation"}
+        assert by_strat["sector_rotation"].qty == 10
+        assert by_strat["sector_rotation"].unrealized_pnl == 100.0  # (410-400)*10
+        assert by_strat["risk_off_rotation"].qty == 5
+        assert by_strat["risk_off_rotation"].unrealized_pnl == 40.0  # (410-402)*5
 
     def test_closed_trade_excluded(self) -> None:
         """Buys that have been matched by a subsequent SELL are not open."""

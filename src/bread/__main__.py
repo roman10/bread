@@ -539,13 +539,13 @@ def journal_cmd(
 
             total_trades = summary["total_trades"]
             win_rate = summary["win_rate_pct"]
-            total_pnl = summary["total_pnl"]
+            realized_pnl = summary["realized_pnl"]
             avg_hold = sum(e.hold_days for e in entries) / len(entries)
-            sign = "+" if total_pnl >= 0 else ""
+            sign = "+" if realized_pnl >= 0 else ""
             typer.echo(
                 f"\nSummary: {total_trades} trades | "
                 f"Win rate: {win_rate:.1f}% | "
-                f"Total P&L: {sign}${total_pnl:,.2f} | "
+                f"Realized P&L: {sign}${realized_pnl:,.2f} | "
                 f"Avg hold: {avg_hold:.1f} days"
             )
         else:

@@ -214,14 +214,14 @@ def get_open_positions(
 
 
 def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
-    """Compute summary stats from journal entries."""
+    """Compute realized-only summary stats from journal entries."""
     if not entries:
         return {
             "win_rate_pct": 0.0,
             "avg_win": 0.0,
             "avg_loss": 0.0,
             "expectancy": 0.0,
-            "total_pnl": 0.0,
+            "realized_pnl": 0.0,
             "total_trades": 0,
             "best_trade": 0.0,
             "worst_trade": 0.0,
@@ -234,15 +234,15 @@ def get_journal_summary(entries: list[JournalEntry]) -> dict[str, float | int]:
     win_rate = len(wins) / total * 100
     avg_win = sum(e.pnl for e in wins) / len(wins) if wins else 0.0
     avg_loss = sum(e.pnl for e in losses) / len(losses) if losses else 0.0
-    total_pnl = sum(e.pnl for e in entries)
-    expectancy = total_pnl / total
+    realized_pnl = sum(e.pnl for e in entries)
+    expectancy = realized_pnl / total
 
     return {
         "win_rate_pct": win_rate,
         "avg_win": avg_win,
         "avg_loss": avg_loss,
         "expectancy": expectancy,
-        "total_pnl": total_pnl,
+        "realized_pnl": realized_pnl,
         "total_trades": total,
         "best_trade": max(e.pnl for e in entries),
         "worst_trade": min(e.pnl for e in entries),
@@ -318,7 +318,7 @@ def get_all_strategies_summary(
 
         avg_hold = sum(e.hold_days for e in group) / len(group)
 
-        realized = float(base["total_pnl"])
+        realized = float(base["realized_pnl"])
         unrealized = round(unreal_by_strat.get(strategy_name, 0.0), 2)
         open_count = len(open_symbols_by_strat.get(strategy_name, set()))
 

@@ -168,7 +168,7 @@ def update_journal(
     unrealized_pnl = sum(p.unrealized_pnl for p in open_positions)
 
     # KPI cards
-    realized_pnl = summary["total_pnl"]
+    realized_pnl = summary["realized_pnl"]
     total_pnl = realized_pnl + unrealized_pnl
     pnl_subtitle = (
         f"realized {format_currency(realized_pnl, show_sign=True)} · "
