@@ -143,3 +143,29 @@ class TestPaperCostSettings:
         from bread.core.config import PaperCostSettings
         with pytest.raises(Exception):  # pydantic ValidationError
             PaperCostSettings(slippage_pct=-0.01)
+
+
+class TestFormatAccountLabel:
+    def test_both_fields(self) -> None:
+        from bread.core.config import format_account_label
+        assert format_account_label("Main", "PA3MDB") == '"Main" (PA3MDB)'
+
+    def test_nickname_only(self) -> None:
+        from bread.core.config import format_account_label
+        assert format_account_label("Main", None) == '"Main"'
+
+    def test_account_number_only(self) -> None:
+        from bread.core.config import format_account_label
+        assert format_account_label(None, "PA3MDB") == "(PA3MDB)"
+
+    def test_both_missing_returns_empty(self) -> None:
+        from bread.core.config import format_account_label
+        assert format_account_label(None, None) == ""
+
+
+class TestAlpacaNickname:
+    def test_nickname_for_paper(self) -> None:
+        from bread.core.config import AlpacaSettings
+        s = AlpacaSettings(paper_nickname="P", live_nickname="L")
+        assert s.nickname_for("paper") == "P"
+        assert s.nickname_for("live") == "L"

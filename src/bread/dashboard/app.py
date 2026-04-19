@@ -20,15 +20,19 @@ _MARKET_INTERVAL_MS = 30_000
 _OFF_INTERVAL_MS = 300_000
 
 
-def _make_navbar(mode: str) -> dbc.Navbar:
+def _make_navbar(mode: str, account_label: str) -> dbc.Navbar:
     badge_color = "primary" if mode == "paper" else "danger"
     # Reset is paper-only. In live mode the button is simply omitted — reset
     # has no business touching a live account, and the server-side callback
     # also raises if anyone forges the click.
     right_group: list[object] = [
         dbc.Badge(mode.upper(), color=badge_color, className="me-2 fs-6"),
-        html.Span(id="connection-dot", className="me-2"),
     ]
+    if account_label:
+        right_group.append(
+            html.Span(account_label, className="me-2 text-muted small")
+        )
+    right_group.append(html.Span(id="connection-dot", className="me-2"))
     if mode == "paper":
         right_group.append(
             dbc.Button(
@@ -178,7 +182,7 @@ def create_app(config: AppConfig) -> dash.Dash:
     app.server.config["data"] = data
 
     layout_children: list[object] = [
-        _make_navbar(config.mode),
+        _make_navbar(config.mode, data.get_account_label()),
         dcc.Interval(
             id="refresh-interval",
             interval=_MARKET_INTERVAL_MS,

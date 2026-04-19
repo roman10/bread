@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import yaml
 from sqlalchemy import func, select
 
-from bread.core.config import CONFIG_DIR
+from bread.core.config import CONFIG_DIR, format_account_label
 from bread.dashboard.components import format_local_dt
 from bread.data.cache import is_market_open
 from bread.db.database import get_engine, get_session_factory, init_db
@@ -86,6 +86,19 @@ class DashboardData:
     # ------------------------------------------------------------------
     # Live data (Alpaca API)
     # ------------------------------------------------------------------
+
+    def get_account_label(self) -> str:
+        """Nickname + Alpaca account number for navbar display. Best-effort."""
+        acct_num: str | None = None
+        if self._broker is not None:
+            try:
+                acct_num = self._broker.get_account().account_number
+            except Exception:
+                logger.debug("Failed to fetch account number for label", exc_info=True)
+        return format_account_label(
+            self._config.alpaca.nickname_for(self._config.mode),
+            acct_num,
+        )
 
     def get_account_summary(self) -> dict[str, float]:
         """Return account KPIs. Empty defaults if broker unavailable."""

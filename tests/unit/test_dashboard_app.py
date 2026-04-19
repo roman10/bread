@@ -46,6 +46,7 @@ def _mock_dashboard_data():
     mock.get_strategy_status.return_value = []
     mock.strategy_names = []
     mock.get_recent_signals.return_value = []
+    mock.get_account_label.return_value = ""
     return mock
 
 

@@ -106,12 +106,14 @@ def _to_optional_float(raw: object) -> float | None:
 
 
 def _to_account(raw: TradeAccount) -> Account:
+    acct_num = getattr(raw, "account_number", None)
     return Account(
         equity=_to_float(getattr(raw, "equity", None)),
         buying_power=_to_float(getattr(raw, "buying_power", None)),
         cash=_to_float(getattr(raw, "cash", None)),
         last_equity=_to_float(getattr(raw, "last_equity", None)),
         created_at=getattr(raw, "created_at", None),
+        account_number=str(acct_num) if acct_num is not None else None,
     )
 
 

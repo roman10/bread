@@ -8,7 +8,7 @@ import typer
 
 from bread.cli._app import app
 from bread.cli._helpers import start_dashboard_thread
-from bread.core.config import load_config
+from bread.core.config import format_account_label, load_config
 from bread.core.exceptions import BreadError
 from bread.core.logging import setup_logging
 from bread.db.database import get_engine, get_session_factory, init_db
@@ -81,8 +81,16 @@ def status_cmd() -> None:
         drawdown_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
 
         sign = "+" if daily_pnl >= 0 else ""
+        label = format_account_label(
+            config.alpaca.nickname_for(config.mode),
+            account.account_number,
+        )
+        header = f"Account [{config.mode}]"
+        if label:
+            header = f"{header} {label}"
+        typer.echo(header)
         typer.echo(
-            f"Account: equity=${equity:,.2f}  cash=${cash:,.2f}  buying_power=${buying_power:,.2f}"
+            f"  equity=${equity:,.2f}  cash=${cash:,.2f}  buying_power=${buying_power:,.2f}"
         )
         typer.echo(
             f"Today: P&L={sign}${daily_pnl:,.2f} ({sign}{daily_pct:.2f}%)  "

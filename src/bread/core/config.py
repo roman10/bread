@@ -52,6 +52,21 @@ class AlpacaSettings(BaseModel):
     paper_secret_key: str | None = None
     live_api_key: str | None = None
     live_secret_key: str | None = None
+    paper_nickname: str | None = None
+    live_nickname: str | None = None
+
+    def nickname_for(self, mode: str) -> str | None:
+        return self.paper_nickname if mode == "paper" else self.live_nickname
+
+
+def format_account_label(nickname: str | None, account_number: str | None) -> str:
+    """Render `"Nickname" (ACCT_NUM)` — missing pieces dropped, empty if both missing."""
+    parts: list[str] = []
+    if nickname:
+        parts.append(f'"{nickname}"')
+    if account_number:
+        parts.append(f"({account_number})")
+    return " ".join(parts)
 
 
 class IndicatorSettings(BaseModel):
@@ -289,6 +304,8 @@ def load_config(config_dir: Path | None = None) -> AppConfig:
         ("ALPACA_PAPER_SECRET_KEY", "paper_secret_key"),
         ("ALPACA_LIVE_API_KEY", "live_api_key"),
         ("ALPACA_LIVE_SECRET_KEY", "live_secret_key"),
+        ("ALPACA_PAPER_NICKNAME", "paper_nickname"),
+        ("ALPACA_LIVE_NICKNAME", "live_nickname"),
     ]:
         val = os.environ.get(env_key)
         if val:

@@ -12,7 +12,7 @@ from apscheduler.events import EVENT_JOB_MISSED, JobExecutionEvent
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from bread.core.config import CONFIG_DIR, AppConfig, load_config
+from bread.core.config import CONFIG_DIR, AppConfig, format_account_label, load_config
 from bread.core.logging import setup_logging
 from bread.core.models import Position, Signal, SignalDirection
 from bread.data.alpaca_data import AlpacaDataProvider
@@ -71,6 +71,16 @@ class TradingApp:
         # 2. Data provider + broker
         self._provider = AlpacaDataProvider(cfg)
         broker = AlpacaBroker(cfg)
+        try:
+            acct_num = broker.get_account().account_number
+        except Exception:
+            acct_num = None
+        label = format_account_label(cfg.alpaca.nickname_for(cfg.mode), acct_num)
+        logger.info(
+            "Connected to Alpaca [%s]%s",
+            cfg.mode,
+            f" {label}" if label else "",
+        )
 
         # 3. Risk manager
         risk = RiskManager(cfg.risk)

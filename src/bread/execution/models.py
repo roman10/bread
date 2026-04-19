@@ -23,6 +23,7 @@ class Account:
     # broker call from blowing up if the field is missing. Use
     # `Broker.get_account_created_at()` when presence is required.
     created_at: datetime | None
+    account_number: str | None = None
 
 
 @dataclass(frozen=True)
