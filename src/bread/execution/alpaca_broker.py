@@ -6,6 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from alpaca.common.enums import Sort
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderClass, OrderSide, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import GetOrdersRequest, MarketOrderRequest
@@ -24,6 +25,8 @@ from urllib3.exceptions import ProtocolError
 from bread.core.exceptions import ExecutionError, OrderError
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from alpaca.trading.models import Order as AlpacaOrder
     from alpaca.trading.models import Position as AlpacaPosition
     from alpaca.trading.models import TradeAccount
@@ -155,6 +158,79 @@ class AlpacaBroker:
         except Exception as exc:
             raise ExecutionError(f"Failed to get orders: {exc}") from exc
 
+    def list_historical_orders(
+        self,
+        *,
+        after: datetime,
+        until: datetime | None = None,
+        status: str = "closed",
+        page_size: int = 500,
+    ) -> list[AlpacaOrder]:
+        """Return orders in [after, until), deduped, paginated newest-first.
+
+        Alpaca caps a single /v2/orders response at 500 rows. We page by
+        walking the `until` cursor backward: each batch's oldest
+        submitted_at becomes the next batch's `until`. Stop on empty or
+        short batch. Cross-batch dedup by order id — the until-cursor
+        boundary can repeat one row across the seam.
+        """
+        collected: dict[str, AlpacaOrder] = {}
+        cursor: datetime | None = until
+        while True:
+            request = GetOrdersRequest(
+                status=QueryOrderStatus(status),
+                after=after,
+                until=cursor,
+                limit=page_size,
+                direction=Sort.DESC,
+                nested=False,
+            )
+            try:
+                raw_batch = _read_retrier(
+                    self._client.get_orders, filter=request
+                )
+            except Exception as exc:
+                raise ExecutionError(f"Failed to list historical orders: {exc}") from exc
+
+            # alpaca-py annotates get_orders as `list[Order] | RawData`. We
+            # don't pass raw_data=True, so it's always a list here, but the
+            # guard keeps us honest if alpaca-py ever changes defaults.
+            if not isinstance(raw_batch, list):
+                raise ExecutionError(
+                    f"Unexpected Alpaca response shape: {type(raw_batch).__name__}"
+                )
+            batch: list[AlpacaOrder] = raw_batch
+
+            if not batch:
+                break
+
+            new_rows = 0
+            oldest: datetime | None = None
+            for o in batch:
+                key = str(o.id)
+                if key not in collected:
+                    collected[key] = o
+                    new_rows += 1
+                submitted = o.submitted_at
+                if submitted is not None and (oldest is None or submitted < oldest):
+                    oldest = submitted
+
+            # Short batch => Alpaca has nothing older in-range; we're done.
+            # No new rows => the cursor advance didn't yield progress; bail.
+            if len(batch) < page_size or new_rows == 0 or oldest is None:
+                break
+            cursor = oldest
+
+        return list(collected.values())
+
+    def get_account_created_at(self) -> datetime:
+        """Return the Alpaca account creation timestamp (UTC)."""
+        acct = self.get_account()
+        created: datetime | None = getattr(acct, "created_at", None)
+        if created is None:
+            raise ExecutionError("Alpaca account response missing created_at")
+        return created
+
     def get_order_by_id(self, order_id: str) -> AlpacaOrder | None:
         """Fetch a single order by its Alpaca order ID. Returns None if not found."""
         try:
@@ -244,6 +320,36 @@ class AlpacaBroker:
                     "Orders for %s still open after cancellation timeout", symbol
                 )
         return cancelled
+
+    def cancel_all_orders(self) -> int:
+        """Cancel every open order on the account. Returns count attempted.
+
+        Wraps alpaca-py's bulk `DELETE /orders`. Never raises — failures are
+        logged so reset flows can proceed to the next step.
+        """
+        try:
+            responses = self._client.cancel_orders()
+        except Exception:
+            logger.warning("Failed to cancel all orders", exc_info=True)
+            return 0
+        if isinstance(responses, list):
+            return len(responses)
+        return 0
+
+    def close_all_positions(self) -> int:
+        """Liquidate every open position. Returns count attempted.
+
+        Passes `cancel_orders=True` so lingering OCO legs don't block the
+        close. Never raises — failures are logged.
+        """
+        try:
+            responses = self._client.close_all_positions(cancel_orders=True)
+        except Exception:
+            logger.warning("Failed to close all positions", exc_info=True)
+            return 0
+        if isinstance(responses, list):
+            return len(responses)
+        return 0
 
     def close_position(self, symbol: str) -> str | None:
         """Close a position by symbol. Returns order ID or None if no position.

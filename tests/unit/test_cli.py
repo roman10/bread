@@ -402,3 +402,236 @@ class TestRepairOrders:
         assert result.exit_code == 1
         # Error message is written via typer.echo(err=True) → stderr.
         assert "must be YYYY-MM-DD" in result.stderr
+
+
+class TestBackfillOrdersHelpers:
+    """Pure helpers — no CLI plumbing."""
+
+    def test_infer_strategy_unique_symbol_wins(self) -> None:
+        from bread.__main__ import _infer_strategy_from_symbol
+
+        universes = {"momentum": ["SPY", "QQQ"], "bonds": ["TLT"]}
+        assert _infer_strategy_from_symbol(universes, "TLT") == "bonds"
+
+    def test_infer_strategy_ambiguous_falls_back_to_legacy(self) -> None:
+        from bread.__main__ import _infer_strategy_from_symbol
+
+        universes = {"momentum": ["SPY"], "fade": ["SPY"]}
+        assert _infer_strategy_from_symbol(universes, "SPY") == "legacy"
+
+    def test_infer_strategy_unknown_symbol_is_legacy(self) -> None:
+        from bread.__main__ import _infer_strategy_from_symbol
+
+        universes = {"momentum": ["SPY"]}
+        assert _infer_strategy_from_symbol(universes, "XYZ") == "legacy"
+
+    def test_infer_strategy_case_insensitive(self) -> None:
+        from bread.__main__ import _infer_strategy_from_symbol
+
+        universes = {"momentum": ["SPY"]}
+        assert _infer_strategy_from_symbol(universes, "spy") == "momentum"
+
+
+class TestBackfillOrders:
+    """Covers `bread backfill-orders` — historical Alpaca order ingestion.
+
+    The command pulls FILLED orders from Alpaca via list_historical_orders
+    and inserts any whose broker_order_id isn't already in the local DB.
+    Dry-run (default) must not commit.
+    """
+
+    def _make_alpaca_order(
+        self,
+        *,
+        order_id: str,
+        symbol: str = "SPY",
+        side: str = "buy",
+        qty: int = 10,
+        status: str = "filled",
+        filled_avg_price: str = "500.0",
+    ) -> MagicMock:
+        from datetime import UTC, datetime
+
+        o = MagicMock()
+        o.id = order_id
+        o.symbol = symbol
+        o.side = side
+        o.qty = qty
+        o.filled_qty = qty
+        o.status = status
+        o.filled_avg_price = filled_avg_price
+        o.submitted_at = datetime(2026, 3, 15, 13, 30, tzinfo=UTC)
+        o.created_at = datetime(2026, 3, 15, 13, 29, tzinfo=UTC)
+        o.filled_at = datetime(2026, 3, 15, 13, 31, tzinfo=UTC)
+        return o
+
+    def _seed_existing(self, tmp_path: Path, broker_order_id: str) -> None:
+        """Put one row in the local DB so we can test idempotency."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.database import init_db
+        from bread.db.models import OrderLog
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        init_db(engine)
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            session.add(OrderLog(
+                broker_order_id=broker_order_id,
+                symbol="SPY", side="BUY", qty=10,
+                status="FILLED", raw_filled_price=500.0, filled_price=500.5,
+                strategy_name="etf_momentum", reason="seeded",
+                created_at_utc=datetime(2026, 3, 15, tzinfo=UTC),
+                filled_at_utc=datetime(2026, 3, 15, tzinfo=UTC),
+            ))
+            session.commit()
+        engine.dispose()
+
+    def _count_orders(self, tmp_path: Path) -> int:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.models import OrderLog
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            n = session.query(OrderLog).count()
+        engine.dispose()
+        return n
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_inserts_new_orders(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(
+            2026, 1, 1, tzinfo=UTC,
+        )
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1"),
+            self._make_alpaca_order(order_id="a2", symbol="QQQ", side="sell"),
+            self._make_alpaca_order(order_id="a3", symbol="DIA"),
+        ]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["backfill-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "inserted:            3" in result.stdout
+        assert self._count_orders(tmp_path) == 3
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_skips_already_present(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        self._seed_existing(tmp_path, "a1")
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(
+            2026, 1, 1, tzinfo=UTC,
+        )
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1"),  # dup
+            self._make_alpaca_order(order_id="a2", symbol="QQQ"),
+        ]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["backfill-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "inserted:            1" in result.stdout
+        assert "skipped_duplicate:   1" in result.stdout
+        assert self._count_orders(tmp_path) == 2  # 1 seeded + 1 new
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_filters_non_filled(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(
+            2026, 1, 1, tzinfo=UTC,
+        )
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1", status="filled"),
+            self._make_alpaca_order(order_id="a2", status="canceled"),
+            self._make_alpaca_order(order_id="a3", status="rejected"),
+        ]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["backfill-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "inserted:            1" in result.stdout
+        assert "skipped_non_filled:  2" in result.stdout
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_dry_run_does_not_commit(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(
+            2026, 1, 1, tzinfo=UTC,
+        )
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1"),
+        ]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["backfill-orders"])  # default dry-run
+
+        assert result.exit_code == 0, result.stdout
+        assert "Dry run" in result.stdout
+        assert self._count_orders(tmp_path) == 0
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_applies_paper_slippage_on_fill_price(self, tmp_path: Path) -> None:
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from bread.db.models import OrderLog
+
+        mock_broker = MagicMock()
+        mock_broker.get_account_created_at.return_value = datetime(
+            2026, 1, 1, tzinfo=UTC,
+        )
+        mock_broker.list_historical_orders.return_value = [
+            self._make_alpaca_order(order_id="a1", side="buy", filled_avg_price="500.0"),
+        ]
+
+        with patch(
+            "bread.execution.alpaca_broker.AlpacaBroker", return_value=mock_broker,
+        ):
+            result = runner.invoke(app, ["backfill-orders", "--no-dry-run"])
+
+        assert result.exit_code == 0, result.stdout
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+        sf = sessionmaker(bind=engine)
+        with sf() as session:
+            row = session.query(OrderLog).first()
+            assert row is not None
+            assert row.raw_filled_price == 500.0
+            assert row.filled_price == pytest.approx(500.0 * 1.001)
+            assert row.reason == "backfill"
+            assert row.broker_order_id == "a1"
+        engine.dispose()
+
+    @pytest.mark.usefixtures("_config_env")
+    def test_rejects_malformed_from(self) -> None:
+        result = runner.invoke(app, ["backfill-orders", "--from", "not-a-date"])
+        assert result.exit_code == 1
+        assert "must be YYYY-MM-DD" in result.stderr
