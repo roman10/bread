@@ -93,7 +93,7 @@ layout = dbc.Container([
             dcc.Slider(
                 id="trades-days-filter",
                 min=7, max=365, step=None, value=30,
-                marks={7: "7", 30: "30", 90: "90", 180: "180", 365: "365"},
+                marks={v: {"label": str(v), "style": {"color": "#dee2e6"}} for v in [7, 30, 90, 180, 365]},
             ),
         ], md=4),
         dbc.Col([
