@@ -31,11 +31,13 @@ _JOURNAL_COLS = [
         "field": "entry_price", "headerName": "Entry", "width": 95,
         "type": "numericColumn",
         "valueFormatter": {"function": "'$' + params.value.toFixed(2)"},
+        "headerTooltip": "Price per share when the position was opened (buy price)",
     },
     {
         "field": "exit_price", "headerName": "Exit", "width": 95,
         "type": "numericColumn",
         "valueFormatter": {"function": "'$' + params.value.toFixed(2)"},
+        "headerTooltip": "Price per share when the position was closed (sell price)",
     },
     {
         "field": "pnl", "headerName": "P&L", "width": 100,
@@ -48,6 +50,7 @@ _JOURNAL_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Profit or loss = (Exit − Entry) × Shares",
     },
     {
         "field": "pnl_pct", "headerName": "P&L %", "width": 80,
@@ -60,10 +63,20 @@ _JOURNAL_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "P&L as a percentage of the amount invested in this trade",
     },
-    {"field": "hold_days", "headerName": "Hold", "width": 65, "type": "numericColumn"},
+    {
+        "field": "hold_days", "headerName": "Hold", "width": 65, "type": "numericColumn",
+        "headerTooltip": "Number of days the position was held before it was sold",
+    },
     {"field": "strategy_name", "headerName": "Strategy", "width": 120},
-    {"field": "exit_reason", "headerName": "Reason", "flex": 1},
+    {
+        "field": "exit_reason", "headerName": "Reason", "flex": 1,
+        "headerTooltip": (
+            "Why the bot sold: take-profit = price target hit, "
+            "stop-loss = loss limit triggered, signal = strategy said sell"
+        ),
+    },
 ]
 
 # -- Layout --
@@ -93,7 +106,10 @@ layout = dbc.Container([
             dcc.Slider(
                 id="trades-days-filter",
                 min=7, max=365, step=None, value=30,
-                marks={v: {"label": str(v), "style": {"color": "#dee2e6"}} for v in [7, 30, 90, 180, 365]},
+                marks={
+                    v: {"label": str(v), "style": {"color": "#dee2e6"}}
+                    for v in [7, 30, 90, 180, 365]
+                },
             ),
         ], md=4),
         dbc.Col([
@@ -179,17 +195,33 @@ def update_journal(
             "Total P&L", format_currency(total_pnl, show_sign=True),
             subtitle=pnl_subtitle,
             color=pnl_color(total_pnl),
+            info=(
+                "Combined profit/loss for the filtered trades. "
+                "Realized = closed trades only. "
+                "Unrealized = current open positions (always included regardless of lookback)."
+            ),
+            card_id="trades-total-pnl",
         ),
         make_kpi_card(
             "Win Rate", format_pct(summary["win_rate_pct"]),
             color="success" if summary["win_rate_pct"] > 50 else "warning",
+            info="Percentage of completed trades in this period that were profitable.",
+            card_id="win-rate",
         ),
         make_kpi_card(
             "Expectancy", format_currency(summary["expectancy"], show_sign=True),
             color=pnl_color(summary["expectancy"]),
+            info=(
+                "Average profit or loss per completed trade. "
+                "Positive = you make money on average per trade. "
+                "Example: $50 expectancy means the average trade earns $50."
+            ),
+            card_id="expectancy",
         ),
         make_kpi_card(
             "Trades", str(summary["total_trades"]), color="info",
+            info="Total number of completed buy-then-sell pairs in the selected period.",
+            card_id="trades-count",
         ),
     ]
     kpi_row = make_kpi_row(cards)

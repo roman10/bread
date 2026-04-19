@@ -41,6 +41,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 50 ? {'color': '#00bc8c'} : {'color': '#f39c12'}"
         },
+        "headerTooltip": "% of completed trades that made money",
     },
     {
         "field": "realized_pnl", "headerName": "Realized", "width": 110,
@@ -53,6 +54,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Locked-in profit/loss from fully closed trades (bought and sold)",
     },
     {
         "field": "unrealized_pnl", "headerName": "Unrealized", "width": 120,
@@ -65,6 +67,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Paper profit/loss on open positions at today's price — not yet locked in",
     },
     {
         "field": "total_pnl", "headerName": "Total P&L", "width": 120,
@@ -77,10 +80,12 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Realized + Unrealized combined",
     },
     {
         "field": "open_positions", "headerName": "Open", "width": 75,
         "type": "numericColumn",
+        "headerTooltip": "Number of positions this strategy currently holds",
     },
     {
         "field": "expectancy", "headerName": "Expectancy", "width": 120,
@@ -93,6 +98,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Average profit or loss per trade. Positive = profitable on average",
     },
     {
         "field": "profit_factor", "headerName": "Profit Factor", "width": 120,
@@ -101,6 +107,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value === null ? '∞' : params.value.toFixed(2)"
         },
+        "headerTooltip": "Total gains ÷ total losses. Above 1.0 = profitable. ∞ = no losses yet",
     },
     {
         "field": "best_trade", "headerName": "Best", "width": 100,
@@ -113,6 +120,7 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "The single most profitable completed trade",
     },
     {
         "field": "worst_trade", "headerName": "Worst", "width": 100,
@@ -125,11 +133,13 @@ _LEADERBOARD_COLS = [
             "function":
             "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "The single biggest losing trade",
     },
     {
         "field": "avg_hold_days", "headerName": "Avg Hold", "width": 110,
         "type": "numericColumn",
         "valueFormatter": {"function": "params.value.toFixed(1) + 'd'"},
+        "headerTooltip": "Average number of days a position is held before selling",
     },
 ]
 
@@ -143,7 +153,10 @@ layout = dbc.Container([
             dcc.Slider(
                 id="strategies-days-filter",
                 min=7, max=365, step=None, value=90,
-                marks={v: {"label": str(v), "style": {"color": "#dee2e6"}} for v in [7, 30, 90, 180, 365]},
+                marks={
+                    v: {"label": str(v), "style": {"color": "#dee2e6"}}
+                    for v in [7, 30, 90, 180, 365]
+                },
             ),
         ], md=6),
     ], className="mb-3"),
@@ -206,18 +219,39 @@ def update_leaderboard(days: int, _n: int) -> tuple:
             str(active_count),
             subtitle="round-trips in window",
             color="info",
+            info=(
+                "How many of your active strategies have made at least one complete "
+                "buy-then-sell trade in the selected time window."
+            ),
+            card_id="strats-with-trades",
         ),
         make_kpi_card(
             "Total P&L", format_currency(total_pnl, show_sign=True),
             subtitle=pnl_subtitle,
             color=pnl_color(total_pnl),
+            info=(
+                "Combined profit/loss across all strategies. "
+                "Realized = locked-in gains/losses from fully closed trades. "
+                "Unrealized = paper gains/losses on positions still open, valued at today's price."
+            ),
+            card_id="strats-total-pnl",
         ),
         make_kpi_card(
             "Combined Win Rate", format_pct(weighted_win_rate),
             color=win_rate_color,
+            info=(
+                "Percentage of completed trades that made money, weighted by trade count "
+                "across all strategies. Above 50% means more wins than losses."
+            ),
+            card_id="combined-win-rate",
         ),
         make_kpi_card(
             "Total Trades", str(total_trades), color="info",
+            info=(
+                "Total number of completed buy-then-sell round-trips across all strategies "
+                "in the selected window."
+            ),
+            card_id="total-trades",
         ),
     ]
     kpi_row = make_kpi_row(cards)

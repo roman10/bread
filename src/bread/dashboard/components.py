@@ -13,16 +13,42 @@ def make_kpi_card(
     value: str,
     subtitle: str = "",
     color: str = "secondary",
+    info: str = "",
+    card_id: str = "",
 ) -> dbc.Card:
-    """Build a single KPI card."""
+    """Build a single KPI card. Pass *info* + *card_id* to show a ⓘ tooltip."""
+    if info and card_id:
+        icon_id = f"kpi-info-{card_id}"
+        title_content: str | list = [
+            title,
+            html.Span(
+                "ⓘ",
+                id=icon_id,
+                style={"cursor": "default", "fontSize": "0.8em", "opacity": "0.45",
+                       "marginLeft": "4px"},
+            ),
+        ]
+        tooltip = dbc.Tooltip(
+            info,
+            target=icon_id,
+            placement="bottom",
+            style={"maxWidth": "300px", "textAlign": "left"},
+        )
+    else:
+        title_content = title
+        tooltip = None
+
     return dbc.Card(
         dbc.CardBody(
             [
                 html.H6(
-                    title, className="card-title mb-1 opacity-75", style={"fontSize": "0.75rem"}
+                    title_content,
+                    className="card-title mb-1 opacity-75",
+                    style={"fontSize": "0.75rem"},
                 ),
                 html.H4(value, className=f"text-{color} mb-0", style={"fontWeight": "600"}),
                 html.Small(subtitle, className="opacity-75") if subtitle else html.Span(),
+                tooltip,
             ]
         ),
         className="h-100",

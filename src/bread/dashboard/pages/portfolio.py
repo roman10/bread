@@ -359,13 +359,17 @@ STRATEGY_EXPLANATIONS: dict[str, dict[str, str | list[str]]] = {
 
 _POSITION_COLS = [
     {"field": "symbol", "headerName": "Symbol", "width": 90},
-    {"field": "qty", "headerName": "Qty", "width": 70, "type": "numericColumn"},
+    {
+        "field": "qty", "headerName": "Qty", "width": 70, "type": "numericColumn",
+        "headerTooltip": "Number of shares held in this position",
+    },
     {
         "field": "entry_price",
         "headerName": "Entry",
         "width": 100,
         "type": "numericColumn",
         "valueFormatter": {"function": "'$' + params.value.toFixed(2)"},
+        "headerTooltip": "Average price paid per share when this position was opened",
     },
     {
         "field": "current_price",
@@ -373,6 +377,7 @@ _POSITION_COLS = [
         "width": 100,
         "type": "numericColumn",
         "valueFormatter": {"function": "'$' + params.value.toFixed(2)"},
+        "headerTooltip": "Current market price per share",
     },
     {
         "field": "unrealized_pnl",
@@ -385,6 +390,7 @@ _POSITION_COLS = [
         "cellStyle": {
             "function": "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Profit or loss if this position were sold right now — not yet locked in",
     },
     {
         "field": "unrealized_pct",
@@ -397,6 +403,7 @@ _POSITION_COLS = [
         "cellStyle": {
             "function": "params.value >= 0 ? {'color': '#00bc8c'} : {'color': '#e74c3c'}"
         },
+        "headerTooltip": "Unrealized P&L as a % of the total amount invested in this position",
     },
     {
         "field": "market_value",
@@ -404,15 +411,25 @@ _POSITION_COLS = [
         "width": 110,
         "type": "numericColumn",
         "valueFormatter": {"function": "'$' + params.value.toLocaleString()"},
+        "headerTooltip": "Current total market value of this position (Current Price × Shares)",
     },
 ]
 
 _ORDER_COLS = [
     {"field": "symbol", "headerName": "Symbol", "width": 90},
-    {"field": "side", "headerName": "Side", "width": 70},
+    {
+        "field": "side", "headerName": "Side", "width": 70,
+        "headerTooltip": "BUY = opening a new position, SELL = closing an existing one",
+    },
     {"field": "qty", "headerName": "Qty", "width": 70},
-    {"field": "type", "headerName": "Type", "width": 100},
-    {"field": "status", "headerName": "Status", "width": 100},
+    {
+        "field": "type", "headerName": "Type", "width": 100,
+        "headerTooltip": "MARKET = fills at current price; LIMIT = fills at your price or better",
+    },
+    {
+        "field": "status", "headerName": "Status", "width": 100,
+        "headerTooltip": "new = submitted, filled = executed, cancelled = not executed",
+    },
     {"field": "submitted_at", "headerName": "Submitted", "flex": 1},
 ]
 
@@ -465,6 +482,7 @@ _SIGNAL_COLS = [
         "width": 90,
         "type": "numericColumn",
         "valueFormatter": {"function": "params.value.toFixed(2)"},
+        "headerTooltip": "How confident the strategy is (0–1 scale). Higher = larger order size",
     },
     {
         "field": "stop_loss_pct",
@@ -472,8 +490,12 @@ _SIGNAL_COLS = [
         "width": 80,
         "type": "numericColumn",
         "valueFormatter": {"function": "params.value.toFixed(1) + '%'"},
+        "headerTooltip": "If price falls this % below your entry, the bot auto-sells to cap losses",
     },
-    {"field": "reason", "headerName": "Reason", "flex": 1},
+    {
+        "field": "reason", "headerName": "Reason", "flex": 1,
+        "headerTooltip": "Which indicators triggered this signal (e.g. RSI level, MA crossover)",
+    },
 ]
 
 _EVENT_COLS = [
@@ -581,17 +603,35 @@ def update_kpi(_n: int) -> dbc.Row:
     data = current_app.config["data"]
     s = data.get_account_summary()
     cards = [
-        make_kpi_card("Equity", format_currency(s["equity"]), color="light"),
+        make_kpi_card(
+            "Equity", format_currency(s["equity"]), color="light",
+            info=(
+                "Total account value — cash plus the current market value of all open "
+                "positions. Think of it as your account's net worth right now."
+            ),
+            card_id="equity",
+        ),
         make_kpi_card(
             "Daily P&L",
             format_currency(s["daily_pnl"], show_sign=True),
             subtitle=format_pct(s["daily_pct"], show_sign=True),
             color=pnl_color(s["daily_pnl"]),
+            info=(
+                "How much your account gained or lost since the market opened today. "
+                "P&L = Profit & Loss. The percentage shows today's change relative to "
+                "yesterday's closing value."
+            ),
+            card_id="daily-pnl",
         ),
         make_kpi_card(
             "Buying Power",
             format_currency(s["buying_power"]),
             color="info",
+            info=(
+                "Cash available to open new positions. The bot won't spend all of it — "
+                "risk limits cap how much can be deployed at once."
+            ),
+            card_id="buying-power",
         ),
         make_kpi_card(
             "Drawdown",
@@ -601,6 +641,12 @@ def update_kpi(_n: int) -> dbc.Row:
             else "warning"
             if s["drawdown_pct"] > 2
             else "secondary",
+            info=(
+                "How far your account has fallen from its all-time peak, as a percentage. "
+                "Example: 5% drawdown means you're currently 5% below your highest-ever "
+                "equity. The bot automatically reduces activity if drawdown grows too large."
+            ),
+            card_id="drawdown",
         ),
     ]
     return make_kpi_row(cards)
@@ -686,16 +732,55 @@ def update_bot_activity(_n: int) -> dbc.Row:
             activity["market_status"],
             subtitle=activity["market_next"],
             color=activity["market_status_color"],
+            info=(
+                "Whether the US stock market is currently open "
+                "(Mon–Fri 9:30am–4:00pm Eastern Time). The bot only trades when the market is open."
+            ),
+            card_id="market-status",
         ),
-        make_kpi_card("Bot Status", activity["status"], color=activity["status_color"]),
-        make_kpi_card("Last Tick", last_tick_str, color="light"),
-        make_kpi_card("Ticks Today", str(activity["ticks_today"]), color="info"),
-        make_kpi_card("Signals Today", str(activity["signals_today"]), color="info"),
+        make_kpi_card(
+            "Bot Status", activity["status"], color=activity["status_color"],
+            info=(
+                "Running = bot scanned the market within the last 20 minutes. "
+                "Stale = bot may have stopped during market hours. "
+                "Idle = market is closed, no activity expected."
+            ),
+            card_id="bot-status",
+        ),
+        make_kpi_card(
+            "Last Tick", last_tick_str, color="light",
+            info=(
+                "The last time the bot scanned the market and updated your portfolio. "
+                "The bot runs every 15 minutes during market hours (~26 times per trading day)."
+            ),
+            card_id="last-tick",
+        ),
+        make_kpi_card(
+            "Ticks Today", str(activity["ticks_today"]), color="info",
+            info=(
+                "How many times the bot has run today. "
+                "A full 6.5-hour trading day produces about 26 ticks."
+            ),
+            card_id="ticks-today",
+        ),
+        make_kpi_card(
+            "Signals Today", str(activity["signals_today"]), color="info",
+            info=(
+                "Buy or sell decisions generated by your strategies today, before risk checks. "
+                "Not all signals lead to orders — the risk manager may block some."
+            ),
+            card_id="signals-today",
+        ),
         make_kpi_card(
             "Orders Today",
             str(activity["trades_today"]),
             subtitle="buy + sell, non-rejected",
             color="info",
+            info=(
+                "Actual buy and sell orders placed with the broker today. "
+                "Only counts orders that passed all risk checks."
+            ),
+            card_id="orders-today",
         ),
     ]
     return make_kpi_row(cards)
