@@ -444,16 +444,40 @@ class TradingApp:
     # Start
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
-        """Initialize components and start the scheduler loop."""
-        # Live mode safety check — BEFORE any broker interaction
-        if self._config.mode == "live":
+    @staticmethod
+    def _confirm_live_mode() -> None:
+        """Gate live trading on either an interactive CONFIRM or an explicit
+        env-var bypass for non-tty contexts (systemd, Docker, cron).
+
+        Hanging on input() under systemd would silently keep the bot from
+        ever starting, so we exit with a clear error if neither path is
+        available."""
+        import os
+
+        if sys.stdin.isatty():
             confirm = input(
                 'WARNING: LIVE TRADING MODE — real money at risk\nType "CONFIRM" to proceed: '
             )
             if confirm.strip() != "CONFIRM":
                 logger.info("Live mode not confirmed, exiting")
                 sys.exit(0)
+            return
+        if os.environ.get("BREAD_LIVE_CONFIRM") == "I_UNDERSTAND":
+            logger.warning(
+                "Live mode auto-confirmed via BREAD_LIVE_CONFIRM=I_UNDERSTAND"
+            )
+            return
+        logger.error(
+            "Live mode requires either an interactive CONFIRM prompt or"
+            " BREAD_LIVE_CONFIRM=I_UNDERSTAND in the environment. Refusing"
+            " to start a live process that cannot be operator-confirmed."
+        )
+        sys.exit(1)
+
+    def start(self) -> None:
+        """Initialize components and start the scheduler loop."""
+        if self._config.mode == "live":
+            self._confirm_live_mode()
 
         self._initialize()
 

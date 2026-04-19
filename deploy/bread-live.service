@@ -1,0 +1,37 @@
+[Unit]
+Description=Bread Trading Bot — live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bread
+Group=bread
+WorkingDirectory=/home/bread/bread
+# --no-dashboard keeps RAM headroom on the e2-micro; inspect live data via
+# `bread status --mode live` / `bread journal --mode live`, or run a
+# dashboard on demand: `bread dashboard --mode live --port 8051`.
+ExecStart=/home/bread/bread/.venv/bin/python -m bread run --mode live --no-dashboard
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=60
+
+# Secrets — same .env file as paper; live keys live alongside paper keys.
+EnvironmentFile=/home/bread/.env
+# Required for non-tty live confirm — operator has accepted the risk by
+# enabling this unit. Remove the line to keep the unit dormant.
+Environment=BREAD_LIVE_CONFIRM=I_UNDERSTAND
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bread-live
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/home/bread
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

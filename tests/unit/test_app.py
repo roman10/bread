@@ -139,6 +139,55 @@ class TestOnJobMissed:
         app._scheduler.add_job.assert_not_called()
 
 
+class TestConfirmLiveMode:
+    def test_tty_confirm_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from bread.app import TradingApp
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "CONFIRM")
+        TradingApp._confirm_live_mode()  # should not raise
+
+    def test_tty_wrong_input_exits_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from bread.app import TradingApp
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda _prompt: "no")
+        with pytest.raises(SystemExit) as exc:
+            TradingApp._confirm_live_mode()
+        assert exc.value.code == 0
+
+    def test_non_tty_with_env_bypass_proceeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from bread.app import TradingApp
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setenv("BREAD_LIVE_CONFIRM", "I_UNDERSTAND")
+        TradingApp._confirm_live_mode()  # should not raise
+
+    def test_non_tty_without_env_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from bread.app import TradingApp
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.delenv("BREAD_LIVE_CONFIRM", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            TradingApp._confirm_live_mode()
+        assert exc.value.code == 1
+
+    def test_non_tty_with_wrong_env_value_exits_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from bread.app import TradingApp
+
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setenv("BREAD_LIVE_CONFIRM", "yes")
+        with pytest.raises(SystemExit) as exc:
+            TradingApp._confirm_live_mode()
+        assert exc.value.code == 1
+
+
 class TestLegacyDbWarning:
     def test_warns_when_legacy_alongside_per_mode(
         self, tmp_path, caplog: pytest.LogCaptureFixture

@@ -277,6 +277,32 @@ Duplicate the unit as `bread-live.service` with `BREAD_MODE=live` and `--mode li
 
 If you have an existing `data/bread.db` from before per-mode isolation, Bread logs a one-time warning at startup. Either rename the file to match the active mode (`mv data/bread.db data/bread-paper.db`) or set `BREAD_DB_PATH=data/bread.db` to keep using it.
 
+## Deploying to GCP (paper now, live later)
+
+The `deploy/` directory ships everything needed to run paper + live side-by-side on a GCP `e2-micro` (free tier). See [`deploy/GCP.md`](deploy/GCP.md) for the full step-by-step. The short version:
+
+1. **`sudo bash deploy/setup-gcp.sh`** — installs Python, the `bread` user, the venv, both per-mode databases, and both systemd units (`bread-paper.service`, `bread-live.service`). Writes a placeholder `/home/bread/.env` with empty paper + live key slots.
+2. **Add paper keys** to `/home/bread/.env`, then `sudo systemctl start bread-paper`. The paper dashboard becomes available at `http://<tailscale-ip>:8050`.
+3. **Live trading is dormant by default.** `bread-live.service` is installed but not enabled — when you're ready, fill in `ALPACA_LIVE_*` keys and `sudo systemctl enable --now bread-live`.
+
+### Why live needs an explicit opt-in
+
+`bread run --mode live` normally prompts `Type "CONFIRM" to proceed` so a stray invocation can't trade real money. systemd has no stdin, so the unit ships with `Environment=BREAD_LIVE_CONFIRM=I_UNDERSTAND` — enabling the service is itself the operator's "I'm ready" signal. To pause live trading later, run `sudo systemctl disable --now bread-live`; re-enable with `enable --now`.
+
+### Updates and the paper-only path
+
+`sudo bash deploy/update.sh` pulls the latest code, refreshes both unit files, and restarts whichever services are currently enabled. With only paper enabled, only paper restarts — live keys can stay missing indefinitely without breaking deploys.
+
+The setup and update scripts are designed to handle the empty-live-keys case throughout: `db init --mode live` is skipped if `ALPACA_LIVE_*` is blank, and `update.sh` won't touch a service that isn't enabled.
+
+### Resource footprint
+
+The live process runs `--no-dashboard` to keep RAM headroom on the 1 GB e2-micro. Inspect live state with `bread status --mode live` / `bread journal --mode live`, or spin up the live dashboard on demand:
+
+```bash
+bread dashboard --mode live --port 8051
+```
+
 #### Auto-Refresh
 
 The dashboard refreshes automatically:
